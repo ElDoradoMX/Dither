@@ -403,6 +403,7 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
      WORKER SOURCE — inert script tag, blobbed into a real Worker
      ============================================================ -->
 <script id="worker-src" type="javascript/worker">
+
 "use strict";
 
 const KERNELS_RAW = {
@@ -582,12 +583,13 @@ function ensureScratch(n){
 /* ---------------- single-layer render ---------------- */
 function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
   const { algo, threshold, gain, weight, levels, colorMode, fg, bg, colorA, colorB,
-          palette, invert, serpentine, circuitBend } = layer;
+          palette, invert, serpentine, circuitBend, haltoneShape } = layer;
   const n = width*height;
   const isDiffusion = !!KERNELS[algo];
   const isOrdered = algo==="bayer2"||algo==="bayer4"||algo==="bayer8";
   const isRandom = algo==="random";
   const isHalftone = algo==="halftone";
+  const isSymbols = algo==="symbols";
   const isFlat = algo==="threshold";
 
   const bayerN = algo==="bayer2"?2:(algo==="bayer4"?4:8);
@@ -623,6 +625,7 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
 
   if(isHalftone){
     const cell = Math.max(3, Math.round(6*(weight<=0?0.2:weight)));
+    const shape = haltoneShape || 'circle';
     if(colorMode==="fullcolor"){
       const rC=S.rC, gC=S.gC, bC=S.bC;
       for(let i=0;i<n;i++){
@@ -642,11 +645,11 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
           const ccx = cx+cell/2, ccy=cy+cell/2;
           for(let y=cy;y<yEnd;y++){
             for(let x=cx;x<xEnd;x++){
-              const dx=x-ccx, dy=y-ccy, d2=dx*dx+dy*dy;
+              const dx=x-ccx, dy=y-ccy;
               const o=(y*width+x)*4;
-              out[o]  = d2<=rr*rr ? 255:0;
-              out[o+1]= d2<=rg2*rg2 ? 255:0;
-              out[o+2]= d2<=rb*rb ? 255:0;
+              out[o]  = halftoneInside(shape,dx,dy,rr) ? 255:0;
+              out[o+1]= halftoneInside(shape,dx,dy,rg2) ? 255:0;
+              out[o+2]= halftoneInside(shape,dx,dy,rb) ? 255:0;
             }
           }
         }
@@ -658,10 +661,56 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
         const lum=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
         if(lum<dl){ dl=lum; dark=p; } if(lum>ll){ ll=lum; light=p; }
       }
-      haltoneMonoPass(out, grayAdj, width, height, cell, dark, light);
+      haltoneMonoPass(out, grayAdj, width, height, cell, dark, light, shape);
     } else {
       const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
-      haltoneMonoPass(out, grayAdj, width, height, cell, lut[0], lut[1]);
+      haltoneMonoPass(out, grayAdj, width, height, cell, lut[0], lut[1], shape);
+    }
+  } else if(isSymbols){
+    const cell = Math.max(6, Math.round(8*(weight<=0?0.2:weight)));
+    const stampCount = clamp(levels,2,8);
+    const stamps = buildSymbolStamps(cell, stampCount);
+    if(colorMode==="fullcolor"){
+      // shared glyph selection from luminance, actual cell color carried through the ink pixels
+      for(let cy=0; cy<height; cy+=cell){
+        for(let cx=0; cx<width; cx+=cell){
+          let sum=0, sr=0, sg=0, sb=0, cnt=0;
+          const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+          for(let y=cy;y<yEnd;y++){
+            for(let x=cx;x<xEnd;x++){
+              const i=y*width+x, o=i*4;
+              sum += grayAdj[i];
+              let r=data[o], g=data[o+1], b=data[o+2];
+              if(invert){ r=255-r; g=255-g; b=255-b; }
+              sr += (r-128)*gainF+128+thrShift; sg += (g-128)*gainF+128+thrShift; sb += (b-128)*gainF+128+thrShift;
+              cnt++;
+            }
+          }
+          const avgLum = sum/cnt;
+          let lvl = Math.round((avgLum/255)*(stampCount-1));
+          if(lvl<0) lvl=0; else if(lvl>stampCount-1) lvl=stampCount-1;
+          const stamp = stamps[lvl];
+          const inkR=clamp(sr/cnt,0,255), inkG=clamp(sg/cnt,0,255), inkB=clamp(sb/cnt,0,255);
+          for(let y=cy;y<yEnd;y++){
+            for(let x=cx;x<xEnd;x++){
+              const on = stamp[(y-cy)*cell+(x-cx)];
+              const o=(y*width+x)*4;
+              out[o]=on?inkR:0; out[o+1]=on?inkG:0; out[o+2]=on?inkB:0;
+            }
+          }
+        }
+      }
+    } else if(colorMode==="palette"){
+      const pal = palette;
+      let dark=pal[0], light=pal[0], dl=999, ll=-1;
+      for(const p of pal){
+        const lum=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
+        if(lum<dl){ dl=lum; dark=p; } if(lum>ll){ ll=lum; light=p; }
+      }
+      symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, dark, light);
+    } else {
+      const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
+      symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, lut[0], lut[1]);
     }
   } else if(colorMode==="fullcolor" && isDiffusion){
     const kernel = KERNELS[algo];
@@ -796,7 +845,18 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
   return out;
 }
 
-function haltoneMonoPass(out, grayAdj, width, height, cell, cLo, cHi){
+function halftoneInside(shape, dx, dy, r){
+  const adx = dx<0?-dx:dx, ady = dy<0?-dy:dy;
+  switch(shape){
+    case 'square':  return adx<=r*0.88 && ady<=r*0.88;
+    case 'diamond': return (adx+ady) <= r*1.05;
+    case 'cross':   return (adx<=r*0.32 && ady<=r*1.3) || (ady<=r*0.32 && adx<=r*1.3);
+    case 'line-h':  return ady <= r*0.5;
+    case 'line-v':  return adx <= r*0.5;
+    default:        return (dx*dx+dy*dy) <= r*r; // circle
+  }
+}
+function haltoneMonoPass(out, grayAdj, width, height, cell, cLo, cHi, shape){
   for(let cy=0; cy<height; cy+=cell){
     for(let cx=0; cx<width; cx+=cell){
       let sum=0, cnt=0;
@@ -809,8 +869,62 @@ function haltoneMonoPass(out, grayAdj, width, height, cell, cLo, cHi){
       for(let y=cy;y<yEnd;y++){
         for(let x=cx;x<xEnd;x++){
           const dx=x-ccx, dy=y-ccy;
-          const inside = (dx*dx+dy*dy) <= r*r;
+          const inside = halftoneInside(shape, dx, dy, r);
           const col = inside? cHi : cLo;
+          const o=(y*width+x)*4;
+          out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+        }
+      }
+    }
+  }
+}
+
+/* ---------------- symbol dither: discrete glyph ramp instead of a single scaling shape ---------------- */
+// stamps generated once per layer per frame (cellSize is small, cost is negligible); each level is a
+// visually distinct mark rather than the same shape scaled, so the ramp itself reads as "symbols":
+// blank -> dot -> ring -> plus -> diamond outline -> square outline -> filled diamond -> filled square
+function buildSymbolStamps(cellSize, count){
+  const stamps = [];
+  const cx = (cellSize-1)/2, cy = (cellSize-1)/2;
+  const R = cellSize/2;
+  for(let lvl=0; lvl<count; lvl++){
+    const stamp = new Uint8Array(cellSize*cellSize);
+    const t = count>1 ? lvl/(count-1) : 1;
+    for(let y=0;y<cellSize;y++){
+      for(let x=0;x<cellSize;x++){
+        const dx=x-cx, dy=y-cy;
+        const adx = dx<0?-dx:dx, ady = dy<0?-dy:dy;
+        const d = Math.sqrt(dx*dx+dy*dy);
+        let on;
+        if(t<=0.001)       on = false;
+        else if(t<0.16)    on = d <= R*0.18;                                   // dot
+        else if(t<0.32)    on = d<=R*0.46 && d>=R*0.28;                        // ring
+        else if(t<0.48)    on = (adx<=R*0.18 && ady<=R*0.64) || (ady<=R*0.18 && adx<=R*0.64); // plus
+        else if(t<0.64)    { const s=adx+ady; on = s<=R*0.94 && s>=R*0.64; }   // diamond outline
+        else if(t<0.80)    { const m=adx>ady?adx:ady; on = m<=R*0.80 && m>=R*0.58; } // square outline
+        else if(t<0.93)    on = (adx+ady) <= R*0.88;                          // filled diamond
+        else               { const m=adx>ady?adx:ady; on = m<=R*0.88; }       // filled square
+        stamp[y*cellSize+x] = on?1:0;
+      }
+    }
+    stamps.push(stamp);
+  }
+  return stamps;
+}
+function symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, cLo, cHi){
+  for(let cy=0; cy<height; cy+=cell){
+    for(let cx=0; cx<width; cx+=cell){
+      let sum=0, cnt=0;
+      const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+      for(let y=cy;y<yEnd;y++) for(let x=cx;x<xEnd;x++){ sum+=grayAdj[y*width+x]; cnt++; }
+      const avg = sum/cnt;
+      let lvl = Math.round((avg/255)*(stampCount-1));
+      if(lvl<0) lvl=0; else if(lvl>stampCount-1) lvl=stampCount-1;
+      const stamp = stamps[lvl];
+      for(let y=cy;y<yEnd;y++){
+        for(let x=cx;x<xEnd;x++){
+          const on = stamp[(y-cy)*cell+(x-cx)];
+          const col = on? cHi : cLo;
           const o=(y*width+x)*4;
           out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
         }
@@ -879,6 +993,7 @@ self.onmessage = function(e){
   const procMs = performance.now()-t0;
   self.postMessage({ type:"result", buffer:out.buffer, width:msg.width, height:msg.height, histogram, procMs, frame:msg.frame }, [out.buffer]);
 };
+
 
 </script>
 
@@ -1070,8 +1185,12 @@ const ALGO_LABELS = {
   'floyd-steinberg':'Floyd–Steinberg', 'atkinson':'Atkinson', 'burkes':'Burkes', 'sierra3':'Sierra 3-row',
   'sierra2':'Sierra 2-row', 'sierra-lite':'Sierra Lite', 'stucki':'Stucki', 'jjn':'JJN',
   'bayer2':'Bayer 2×2', 'bayer4':'Bayer 4×4', 'bayer8':'Bayer 8×8',
-  'random':'Random', 'halftone':'Halftone', 'threshold':'Threshold'
+  'random':'Random', 'halftone':'Halftone', 'symbols':'Symbols', 'threshold':'Threshold'
 };
+const HALFTONE_SHAPES = [
+  ['circle','Circle'], ['square','Square'], ['diamond','Diamond'],
+  ['cross','Cross'], ['line-h','Line (horizontal)'], ['line-v','Line (vertical)']
+];
 const DIFFUSION_ALGOS = { 'floyd-steinberg':1,'atkinson':1,'burkes':1,'sierra3':1,'sierra2':1,'sierra-lite':1,'stucki':1,'jjn':1 };
 const BLEND_MODES = ['normal','multiply','screen','overlay','darken','lighten','difference','exclusion','add'];
 
@@ -1081,7 +1200,7 @@ function makeDefaultLayer(name){
     id: layerIdCounter, name: name || ('Layer '+layerIdCounter),
     enabled: true, expanded: true,
     algo: 'floyd-steinberg', threshold: 128, gain: 1.0, weight: 1.0, levels: 2,
-    invert: false, serpentine: true,
+    invert: false, serpentine: true, haltoneShape: 'circle',
     colorMode: 'mono',
     monoBg: hexToRgb('#0e120f'), monoFg: hexToRgb('#ede7da'),
     duoA: hexToRgb('#14110d'), duoB: hexToRgb('#5fa889'),
@@ -1098,7 +1217,7 @@ function resolvePalette(L){
 function layerToMessage(L){
   return {
     enabled: L.enabled, algo: L.algo, threshold: L.threshold, gain: L.gain, weight: L.weight, levels: L.levels,
-    invert: L.invert, serpentine: L.serpentine, colorMode: L.colorMode,
+    invert: L.invert, serpentine: L.serpentine, haltoneShape: L.haltoneShape, colorMode: L.colorMode,
     fg: L.monoFg, bg: L.monoBg, colorA: L.duoA, colorB: L.duoB,
     palette: L.colorMode==='palette' ? resolvePalette(L) : null,
     circuitBend: (L.circuitBend/100) + (L.circuitAnimate ? L._animPhase : 0),
@@ -1106,6 +1225,7 @@ function layerToMessage(L){
     blendMode: L.blendMode, opacity: L.opacity
   };
 }
+
 
 /* ---------------- state ---------------- */
 const state = {
@@ -1492,7 +1612,7 @@ function algoOptionsHTML(L){
     ['Error diffusion', ['floyd-steinberg','atkinson','burkes','sierra3','sierra2','sierra-lite','stucki','jjn']],
     ['Ordered', ['bayer2','bayer4','bayer8']],
     ['Stochastic', ['random']],
-    ['Screen', ['halftone']],
+    ['Screen', ['halftone','symbols']],
     ['Flat', ['threshold']]
   ];
   return groups.map(([label,vals])=>
@@ -1574,6 +1694,11 @@ function layerCardHTML(L, i){
     </div>
     <div class="layer-body">
       <div class="field"><select data-field="algo">${algoOptionsHTML(L)}</select></div>
+      <div class="field" style="display:${L.algo==='halftone'?'block':'none'};">
+        <label style="margin-bottom:7px;">Dot shape</label>
+        <select data-field="haltoneShape">${HALFTONE_SHAPES.map(([v,label])=>
+          `<option value="${v}" ${L.haltoneShape===v?'selected':''}>${label}</option>`).join('')}</select>
+      </div>
       <label class="check" style="display:${showSerp?'flex':'none'}; margin-bottom:10px;">
         <input type="checkbox" data-field="serpentine" ${L.serpentine?'checked':''}><span class="box"></span> Serpentine scan
       </label>
