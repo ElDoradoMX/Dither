@@ -1,1118 +1,1823 @@
-<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <meta http-equiv="Content-Style-Type" content="text/css">
-  <title></title>
-  <meta name="Generator" content="Cocoa HTML Writer">
-  <meta name="CocoaVersion" content="2575.2">
-  <style type="text/css">
-    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
-    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HALFTONE — Real-Time Dither Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   HALFTONE — darkroom / proof-sheet instrument theme
+   ============================================================ */
+:root{
+  --ink:       #14110d;
+  --panel:     #1c1812;
+  --panel-2:   #241f18;
+  --line:      #3a3227;
+  --paper:     #ede7da;
+  --paper-dim: #a89f8c;
+  --paper-mute:#746b5c;
+  --accent:    #5fa889;
+  --accent-2:  #3d7a63;
+  --accent-glow: rgba(95,168,137,0.35);
+  --rec:       #b8452f;
+  --radius:    3px;
+  --font-d:    'Space Grotesk', sans-serif;
+  --font-m:    'IBM Plex Mono', monospace;
+}
+*{box-sizing:border-box;}
+html,body{
+  margin:0; padding:0; width:100%; height:100%;
+  background:var(--ink); color:var(--paper);
+  font-family:var(--font-d);
+  overflow:hidden;
+  -webkit-user-select:none; user-select:none;
+}
+body{
+  background-image:
+    radial-gradient(ellipse at 30% 0%, rgba(95,168,137,0.05), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 3px);
+}
+#app{ position:fixed; inset:0; display:flex; }
+
+/* ---------- viewport ---------- */
+#viewport{
+  position:relative; flex:1; min-width:0;
+  display:flex; align-items:center; justify-content:center;
+  background:
+    radial-gradient(ellipse at center, #201a13 0%, #100d09 100%);
+  overflow:hidden;
+}
+#frame{
+  position:relative;
+  border:1px solid var(--line);
+  background:#000;
+  box-shadow: 0 0 0 6px #100d09, 0 20px 60px rgba(0,0,0,0.6);
+  transition: width .18s ease, height .18s ease;
+}
+#dispCanvas{ display:block; width:100%; height:100%; image-rendering:pixelated; }
+/* film-edge registration ticks — signature detail */
+.reg{ position:absolute; pointer-events:none; opacity:0.55; }
+.reg.tl,.reg.tr,.reg.bl,.reg.br{ width:14px; height:14px; }
+.reg.tl{ top:-1px; left:-1px; border-top:1px solid var(--paper-dim); border-left:1px solid var(--paper-dim);}
+.reg.tr{ top:-1px; right:-1px; border-top:1px solid var(--paper-dim); border-right:1px solid var(--paper-dim);}
+.reg.bl{ bottom:-1px; left:-1px; border-bottom:1px solid var(--paper-dim); border-left:1px solid var(--paper-dim);}
+.reg.br{ bottom:-1px; right:-1px; border-bottom:1px solid var(--paper-dim); border-right:1px solid var(--paper-dim);}
+#sprockets{ position:absolute; left:-13px; top:0; bottom:0; width:8px; display:flex; flex-direction:column; justify-content:space-evenly; opacity:.5; pointer-events:none;}
+#sprockets div{ width:5px; height:5px; border-radius:1px; background:var(--paper-dim); }
+#frameLabel{
+  position:absolute; bottom:6px; left:8px; font-family:var(--font-m); font-size:9px;
+  letter-spacing:0.06em; color:var(--paper-dim); opacity:.7; pointer-events:none;
+}
+
+/* ---------- top hud bar ---------- */
+#topbar{
+  position:absolute; top:0; left:0; right:0; height:44px; display:flex; align-items:center;
+  padding:0 10px; gap:8px; z-index:20;
+  background:linear-gradient(to bottom, rgba(20,17,13,0.85), transparent);
+  transition:opacity .3s ease, transform .3s ease;
+}
+#topbar.hidden{ opacity:0; transform:translateY(-8px); pointer-events:none; }
+.brand{ font-weight:700; font-size:13px; letter-spacing:0.14em; color:var(--paper); margin-right:auto; display:flex; align-items:center; gap:7px;}
+.brand .dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent-glow); }
+.brand .dot.live{ background:var(--rec); box-shadow:0 0 8px rgba(184,69,47,.7); animation:pulse 1.4s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+
+.iconbtn{
+  width:32px; height:32px; border-radius:var(--radius); border:1px solid var(--line);
+  background:rgba(28,24,18,0.7); color:var(--paper-dim); display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition:all .12s ease; flex-shrink:0;
+}
+.iconbtn:hover{ color:var(--paper); border-color:var(--accent-2); background:rgba(95,168,137,0.1); }
+.iconbtn.active{ color:var(--ink); background:var(--accent); border-color:var(--accent); }
+.iconbtn svg{ width:16px; height:16px; }
+
+#hud-readout{
+  position:absolute; top:52px; left:10px; z-index:15; font-family:var(--font-m); font-size:10px;
+  color:var(--paper-dim); background:rgba(20,17,13,0.6); border:1px solid var(--line); border-radius:var(--radius);
+  padding:6px 9px; line-height:1.7; letter-spacing:0.03em; pointer-events:none; transition:opacity .3s ease;
+}
+#hud-readout.hidden{ opacity:0; }
+#hud-readout b{ color:var(--accent); font-weight:600; }
+#histWrap{ margin-top:5px; }
+#histCanvas{ display:block; width:120px; height:28px; }
+
+/* ---------- drawer ---------- */
+#drawer{
+  width:308px; flex-shrink:0; background:var(--panel); border-left:1px solid var(--line);
+  display:flex; flex-direction:column; overflow:hidden;
+  transition:margin-right .22s ease, width .22s ease;
+}
+#drawer.collapsed{ margin-right:-309px; }
+#drawerScroll{ flex:1; overflow-y:auto; overflow-x:hidden; padding:14px 14px 30px; }
+#drawerScroll::-webkit-scrollbar{ width:6px; }
+#drawerScroll::-webkit-scrollbar-thumb{ background:var(--line); border-radius:3px; }
+#drawerHead{
+  height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:space-between;
+  padding:0 12px; border-bottom:1px solid var(--line); background:var(--panel-2);
+}
+#drawerHead .title{ font-size:11px; letter-spacing:0.16em; color:var(--paper-dim); font-weight:600; }
+
+.section{ margin-bottom:18px; }
+.section:last-child{ margin-bottom:4px; }
+.section-head{
+  display:flex; align-items:center; gap:7px; margin-bottom:9px;
+  font-size:10px; letter-spacing:0.16em; color:var(--paper-mute); font-weight:600; text-transform:uppercase;
+}
+.section-head::after{ content:''; flex:1; height:1px; background:var(--line); }
+.section-head .idx{ color:var(--accent); font-family:var(--font-m); }
+
+.row{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.row:last-child{ margin-bottom:0; }
+.field{ margin-bottom:12px; }
+.field:last-child{ margin-bottom:0; }
+.field label{
+  display:flex; justify-content:space-between; font-size:10.5px; color:var(--paper-dim);
+  margin-bottom:5px; letter-spacing:0.03em;
+}
+.field label .val{ font-family:var(--font-m); color:var(--accent); font-size:10.5px; }
+
+input[type=range]{
+  -webkit-appearance:none; width:100%; height:3px; background:var(--line); border-radius:2px; outline:none; cursor:pointer;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:12px; height:12px; border-radius:2px; background:var(--accent);
+  border:1px solid #0c0a07; cursor:pointer; box-shadow:0 0 0 2px rgba(95,168,137,0.18);
+}
+input[type=range]::-moz-range-thumb{
+  width:12px; height:12px; border-radius:2px; background:var(--accent); border:1px solid #0c0a07; cursor:pointer;
+}
+
+select, .btn, .text-input{
+  width:100%; background:var(--panel-2); border:1px solid var(--line); color:var(--paper);
+  font-family:var(--font-d); font-size:11.5px; padding:7px 8px; border-radius:var(--radius);
+  cursor:pointer; outline:none;
+}
+select:hover, .btn:hover{ border-color:var(--accent-2); }
+.btn{ display:flex; align-items:center; justify-content:center; gap:6px; font-weight:600; letter-spacing:0.03em; transition:all .12s ease;}
+.btn.primary{ background:var(--accent); color:#0e120f; border-color:var(--accent); }
+.btn.primary:hover{ background:#6fbb9a; }
+.btn:active{ transform:translateY(1px); }
+.btn svg{ width:13px; height:13px; }
+
+.tabs{ display:flex; gap:4px; margin-bottom:10px; }
+.tab{
+  flex:1; text-align:center; padding:7px 4px; font-size:10px; letter-spacing:0.05em; font-weight:600;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius); color:var(--paper-mute);
+  cursor:pointer; transition:all .12s ease; text-transform:uppercase;
+}
+.tab.active{ background:var(--accent); color:#0e120f; border-color:var(--accent); }
+.tab:hover:not(.active){ color:var(--paper); }
+
+.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.grid3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+.grid4{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+.ar-btn{
+  padding:8px 2px; font-size:10px; text-align:center; background:var(--panel-2); border:1px solid var(--line);
+  border-radius:var(--radius); color:var(--paper-dim); cursor:pointer; font-family:var(--font-m); letter-spacing:0.02em;
+}
+.ar-btn:hover{ border-color:var(--accent-2); color:var(--paper); }
+.ar-btn.active{ background:var(--accent); color:#0e120f; border-color:var(--accent); }
+
+.check{ display:flex; align-items:center; gap:8px; cursor:pointer; font-size:11px; color:var(--paper-dim); user-select:none; }
+.check input{ display:none; }
+.check .box{
+  width:14px; height:14px; border:1px solid var(--line); border-radius:2px; background:var(--panel-2);
+  display:flex; align-items:center; justify-content:center; flex-shrink:0;
+}
+.check input:checked + .box{ background:var(--accent); border-color:var(--accent); }
+.check input:checked + .box::after{ content:''; width:5px; height:5px; background:#0e120f; border-radius:1px; }
+
+.swatchrow{ display:flex; gap:6px; flex-wrap:wrap; }
+.colorpick{
+  width:30px; height:30px; border-radius:var(--radius); border:1px solid var(--line); overflow:hidden; position:relative; cursor:pointer;
+  flex-shrink:0;
+}
+.colorpick input[type=color]{ position:absolute; inset:-4px; border:none; width:calc(100% + 8px); height:calc(100% + 8px); cursor:pointer; padding:0;}
+.colorlabel{ font-size:9.5px; color:var(--paper-mute); text-align:center; margin-top:3px; }
+.swatch-mini{ width:22px; height:22px; border-radius:2px; border:1px solid var(--line); flex-shrink:0; cursor:pointer; position:relative; }
+.swatch-mini.rm::after{ content:'×'; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; text-shadow:0 0 3px #000; opacity:0; }
+.swatch-mini.rm:hover::after{ opacity:1; }
+
+.hint{ font-size:9.5px; color:var(--paper-mute); line-height:1.5; margin-top:6px; }
+
+/* layer cards */
+.layer-card{ border:1px solid var(--line); border-radius:var(--radius); margin-bottom:9px; background:var(--panel-2); overflow:hidden; }
+.layer-card.disabled{ opacity:.5; }
+.layer-head{ display:flex; align-items:center; gap:3px; padding:8px 8px; cursor:pointer; user-select:none; }
+.layer-head:hover{ background:rgba(95,168,137,0.06); }
+.layer-name{ font-size:11px; font-weight:600; margin-left:5px; margin-right:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer-tag{ font-family:var(--font-m); font-size:8.5px; color:var(--paper-mute); background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:1px 5px; margin-right:auto; white-space:nowrap; }
+.layer-mini-btn{ width:21px; height:21px; border-radius:2px; border:none; background:transparent; color:var(--paper-mute); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; padding:0; }
+.layer-mini-btn:hover{ color:var(--paper); background:rgba(255,255,255,0.07); }
+.layer-mini-btn.on{ color:var(--accent); }
+.layer-mini-btn svg{ width:12px; height:12px; }
+.layer-chevron{ flex-shrink:0; color:var(--paper-mute); transition:transform .15s ease; }
+.layer-card.collapsed .layer-chevron{ transform:rotate(-90deg); }
+.layer-body{ padding:11px 10px 13px; border-top:1px solid var(--line); }
+.layer-card.collapsed .layer-body{ display:none; }
+.subgrid2{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+.addLayerBtn{ margin-top:2px; }
+.layer-divider{ height:1px; background:var(--line); margin:12px 0; }
+.status-line{ font-family:var(--font-m); font-size:10px; color:var(--paper-dim); margin-top:6px; min-height:14px; }
+.dropzone{
+  border:1px dashed var(--line); border-radius:var(--radius); padding:16px 8px; text-align:center;
+  font-size:10.5px; color:var(--paper-mute); cursor:pointer; transition:all .12s ease;
+}
+.dropzone:hover, .dropzone.over{ border-color:var(--accent); color:var(--paper); background:rgba(95,168,137,0.05); }
+
+/* fullscreen state */
+:fullscreen #drawer, ::backdrop{ }
+.pillbar{ display:flex; gap:6px; }
+.pillbar .btn{ padding:7px; }
+
+/* toast */
+#toast{
+  position:absolute; bottom:18px; left:50%; transform:translateX(-50%) translateY(8px);
+  background:var(--panel); border:1px solid var(--accent-2); color:var(--paper); font-size:11px;
+  padding:8px 14px; border-radius:var(--radius); z-index:40; opacity:0; transition:all .25s ease; pointer-events:none;
+  letter-spacing:0.02em;
+}
+#toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+@media (max-width:760px){
+  #drawer{ position:absolute; right:0; top:0; bottom:0; width:82vw; max-width:320px; z-index:30; box-shadow:-10px 0 30px rgba(0,0,0,0.4);}
+  #drawer.collapsed{ margin-right:-82vw; }
+}
+</style>
 </head>
 <body>
-<p class="p1">&lt;!DOCTYPE html&gt;</p>
-<p class="p1">&lt;!--</p>
-<p class="p1"><span class="Apple-converted-space">    </span>THIS IS A TEMPLATE THAT SHOULD BE USED EVERY TIME AND MODIFIED.</p>
-<p class="p1"><span class="Apple-converted-space">    </span>WHAT TO KEEP:</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✓ Overall structure (header, sidebar, main content)</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✓ Anthropic branding (colors, fonts, layout)</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✓ Seed navigation section (always include this)</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✓ Self-contained artifact (everything inline)</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">    </span>WHAT TO CREATIVELY EDIT:</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✗ The p5.js algorithm (implement YOUR vision)</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✗ The parameters (define what YOUR art needs)</p>
-<p class="p1"><span class="Apple-converted-space">    </span>✗ The UI controls (match YOUR parameters)</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">    </span>Let your philosophy guide the implementation.</p>
-<p class="p1"><span class="Apple-converted-space">    </span>The world is your oyster - be creative!</p>
-<p class="p1">--&gt;</p>
-<p class="p1">&lt;html lang="en"&gt;</p>
-<p class="p1">&lt;head&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;meta charset="UTF-8"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;title&gt;Concentric Bloom — Generative Art&lt;/title&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"&gt;&lt;/script&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;style&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Neutral Theme */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>:root {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--bg-deep: #0c0c10;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--glass-bg: rgba(255, 255, 255, 0.06);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--glass-bg-strong: rgba(255, 255, 255, 0.1);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--glass-border: rgba(255, 255, 255, 0.12);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--text-primary: rgba(255, 255, 255, 0.92);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--text-muted: rgba(255, 255, 255, 0.5);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--accent: #8b8bf5;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>--accent-2: #5ee7c0;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>* {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin: 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>box-sizing: border-box;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>html, body {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow: hidden;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>body {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: radial-gradient(circle at 20% 20%, #17171d 0%, var(--bg-deep) 60%);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.container {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 100vh;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 16px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 16px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>box-sizing: border-box;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Sidebar */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.sidebar {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 280px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>flex-shrink: 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--glass-bg);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>backdrop-filter: blur(24px) saturate(160%);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>-webkit-backdrop-filter: blur(24px) saturate(160%);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 18px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 16px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow-y: auto;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow-x: hidden;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Control Sections */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.control-section {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 22px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding-bottom: 18px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-bottom: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.control-section:last-child {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-bottom: none;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.control-section h3 {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 11px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-weight: 600;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>letter-spacing: 0.08em;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>text-transform: uppercase;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-muted);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Seed Controls */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.seed-input {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: rgba(0, 0, 0, 0.25);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 10px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 8px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-family: 'SF Mono', 'Courier New', monospace;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 13px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 10px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>text-align: center;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.seed-input:focus {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>outline: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-color: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.select-input {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: rgba(0, 0, 0, 0.25);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 9px 10px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 8px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-family: inherit;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 13px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.select-input:focus {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>outline: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-color: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.seed-controls {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: grid;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>grid-template-columns: 1fr 1fr;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 8px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 8px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.regen-button {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 0;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Parameter Controls */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.control-group {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 16px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.control-group label {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: block;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 12.5px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-weight: 500;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 6px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.slider-container {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>align-items: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 10px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.slider-container input[type="range"] {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>flex: 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 3px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 2px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>outline: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>-webkit-appearance: none;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.slider-container input[type="range"]::-webkit-slider-thumb {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>-webkit-appearance: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 50%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>transition: transform 0.15s ease;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.slider-container input[type="range"]::-webkit-slider-thumb:hover {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>transform: scale(1.15);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.slider-container input[type="range"]::-moz-range-thumb {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 50%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.value-display {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-family: 'SF Mono', 'Courier New', monospace;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 11px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-muted);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>min-width: 44px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>text-align: right;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Compact Palette Grid */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.palette-grid {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: grid;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>grid-template-columns: repeat(6, 1fr);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 6px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.swatch {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>position: relative;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>aspect-ratio: 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 7px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow: hidden;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.swatch input[type="color"] {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>position: absolute;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>inset: -20%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 140%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 140%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: none;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>opacity: 0;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.bg-swatch-row {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>align-items: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 10px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>margin-bottom: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.bg-swatch-row .swatch {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 32px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 32px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>flex-shrink: 0;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.bg-swatch-row label {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 12.5px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Buttons */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--glass-bg-strong);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-primary);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border: 1px solid var(--glass-border);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>padding: 9px 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 9px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 13px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-weight: 500;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>cursor: pointer;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>transition: all 0.15s ease;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button:hover {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: rgba(255, 255, 255, 0.16);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>transform: translateY(-1px);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button:active {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>transform: translateY(0);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button.primary {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-color: var(--accent);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: #0c0c10;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-weight: 600;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button.primary:hover {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: #9d9dff;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button-row {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gap: 8px;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>.button-row .button {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>flex: 1;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Canvas Area */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.canvas-area {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>flex: 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>align-items: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>justify-content: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>min-width: 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow: hidden;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>#canvas-container {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>align-items: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>justify-content: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>border-radius: 16px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overflow: hidden;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background: white;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>#canvas-container canvas {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: block;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>max-width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>max-height: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>width: auto !important;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>height: auto !important;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Loading State */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>.loading {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>display: flex;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>align-items: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>justify-content: center;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>font-size: 14px;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>color: var(--text-muted);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>/* Responsive - Stack on mobile */</p>
-<p class="p1"><span class="Apple-converted-space">        </span>@media (max-width: 600px) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>.container {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>flex-direction: column;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>height: auto;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>min-height: 100vh;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>overflow-y: auto;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>html, body {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>overflow-y: auto;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>.sidebar {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>width: 100%;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>.canvas-area {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>padding: 20px;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>height: 60vh;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;/style&gt;</p>
-<p class="p1">&lt;/head&gt;</p>
-<p class="p1">&lt;body&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;div class="container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;!-- Control Sidebar --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="sidebar"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Seed Section (ALWAYS KEEP THIS) --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Seed&lt;/h3&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;input type="number" id="seed-input" class="seed-input" value="12345" onchange="updateSeed()"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="seed-controls"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;button class="button" onclick="previousSeed()"&gt;← Prev&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;button class="button" onclick="nextSeed()"&gt;Next →&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;button class="button regen-button" onclick="randomSeedAndUpdate()"&gt;↻ Random&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Parameters Section --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Composition&lt;/h3&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Form Density&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="formCount" min="60" max="260" step="5" value="150" oninput="updateParam('formCount', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="formCount-value"&gt;150&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Max Scale&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="maxRadius" min="180" max="480" step="10" value="360" oninput="updateParam('maxRadius', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="maxRadius-value"&gt;360&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Overlap Fluidity&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="overlap" min="0" max="0.6" step="0.02" value="0.28" oninput="updateParam('overlap', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="overlap-value"&gt;0.28&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Ring Density&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="ringDensity" min="0.5" max="2.2" step="0.05" value="1.2" oninput="updateParam('ringDensity', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="ringDensity-value"&gt;1.2&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Nesting Probability&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="nestProb" min="0" max="0.8" step="0.02" value="0.4" oninput="updateParam('nestProb', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="nestProb-value"&gt;0.4&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Rings &amp; Fill --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Rings &amp;amp; Fill&lt;/h3&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Filled Ring Amount&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="filledAmount" min="0" max="0.9" step="0.05" value="0.45" oninput="updateParam('filledAmount', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="filledAmount-value"&gt;0.45&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Gradient Complexity&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="gradientComplexity" min="2" max="5" step="1" value="3" oninput="updateParam('gradientComplexity', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="gradientComplexity-value"&gt;3&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Ring Spacing&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="ringSpacing" min="0.4" max="2.5" step="0.05" value="1" oninput="updateParam('ringSpacing', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="ringSpacing-value"&gt;1&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Spacing Growth&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="spacingGrowth" min="0.3" max="0.95" step="0.02" value="0.62" oninput="updateParam('spacingGrowth', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="spacingGrowth-value"&gt;0.62&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Focus &amp; Blur --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Glow&lt;/h3&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Glow Rings&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="glowChance" min="0" max="0.6" step="0.02" value="0.15" oninput="updateParam('glowChance', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="glowChance-value"&gt;0.15&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Glow Intensity&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="glowIntensity" min="0" max="12" step="1" value="6" oninput="updateParam('glowIntensity', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="glowIntensity-value"&gt;6&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Canvas Section --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Canvas&lt;/h3&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Aspect Preset&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;select id="canvasPreset" class="select-input" onchange="applyCanvasPreset(this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="fit" selected&gt;Fit Screen&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="1:1"&gt;Square · 1:1&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="4:5"&gt;Portrait · 4:5&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="5:4"&gt;Landscape · 5:4&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="9:16"&gt;Story · 9:16&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="16:9"&gt;Widescreen · 16:9&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;option value="3:2"&gt;Classic · 3:2&lt;/option&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/select&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Colors Section --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Colors&lt;/h3&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="bg-swatch-row"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="swatch" style="background:#ffffff;"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="color" id="bgColor" value="#ffffff" onchange="updateBgColor(this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Background&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="control-group"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;label&gt;Cycle Colors&lt;/label&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;div class="slider-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;input type="range" id="colorCycleHue" min="0" max="360" step="1" value="0" oninput="updateParam('colorCycleHue', this.value)"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>&lt;span class="value-display" id="colorCycleHue-value"&gt;0&lt;/span&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="palette-grid" id="paletteGrid"&gt;&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;!-- Actions Section (ALWAYS KEEP THIS) --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div class="control-section"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;h3&gt;Actions&lt;/h3&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="button-row" style="margin-bottom: 8px;"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;button class="button primary" onclick="regenerate()"&gt;↻ Regenerate&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="button-row"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;button class="button" onclick="resetParameters()"&gt;Reset&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>&lt;button class="button" onclick="downloadArt()"&gt;⬇ Download&lt;/button&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;!-- Main Canvas Area --&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="canvas-area"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;div id="canvas-container"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>&lt;div class="loading"&gt;Initializing generative art...&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;script&gt;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// GENERATIVE ART PARAMETERS</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>let params = {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>seed: 12345,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>formCount: 150,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>maxRadius: 360,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>overlap: 0.28,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ringDensity: 1.2,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>nestProb: 0.4,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>filledAmount: 0.45,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>colorCycleHue: 0,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>gradientComplexity: 3,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ringSpacing: 1,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>spacingGrowth: 0.62,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>glowChance: 0.15,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>glowIntensity: 6,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>backgroundColor: '#ffffff',</p>
-<p class="p1"><span class="Apple-converted-space">            </span>canvasPreset: 'fit',</p>
-<p class="p1"><span class="Apple-converted-space">            </span>canvasWidth: 1200,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>canvasHeight: 1200,</p>
-<p class="p1"><span class="Apple-converted-space">            </span>colorPalette: [</p>
-<p class="p1"><span class="Apple-converted-space">                </span>'#ff1e8c', '#c6f42d', '#0088c4', '#ff9fc9', '#5b2a8c', '#a4907c',</p>
-<p class="p1"><span class="Apple-converted-space">                </span>'#00e5c7', '#ff5b1f', '#b026ff', '#eaff00'</p>
-<p class="p1"><span class="Apple-converted-space">            </span>]</p>
-<p class="p1"><span class="Apple-converted-space">        </span>};</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>let defaultParams = {...params, colorPalette: [...params.colorPalette]}; // Store defaults for reset</p>
-<p class="p1"><span class="Apple-converted-space">        </span>let renderPalette = [];</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// P5.JS GENERATIVE ALGORITHM — CONCENTRIC PACKING</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>let forms = [];</p>
-<p class="p1"><span class="Apple-converted-space">        </span>let rng; // seeded pseudo-random generator (own implementation for total determinism)</p>
-<p class="p1"><span class="Apple-converted-space">        </span>let rngState;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function setup() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>computeCanvasSizeForPreset('fit');</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>let canvas = createCanvas(params.canvasWidth, params.canvasHeight);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>canvas.parent('canvas-container');</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>renderPaletteGrid();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.querySelector('.loading').style.display = 'none';</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function getAvailableCanvasSize() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let area = document.querySelector('.canvas-area');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let w = Math.max(400, Math.floor(area.clientWidth - 8));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let h = Math.max(400, Math.floor(area.clientHeight - 8));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return { w, h };</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function computeCanvasSizeForPreset(preset) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let area = getAvailableCanvasSize();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (preset === 'fit') {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>params.canvasWidth = area.w;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>params.canvasHeight = area.h;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let [wp, hp] = preset.split(':').map(Number);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let ratio = wp / hp;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let w = area.w, h = w / ratio;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>if (h &gt; area.h) { h = area.h; w = h * ratio; }</p>
-<p class="p1"><span class="Apple-converted-space">                </span>params.canvasWidth = Math.floor(w);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>params.canvasHeight = Math.floor(h);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.canvasPreset = preset;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function applyCanvasPreset(preset) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>computeCanvasSizeForPreset(preset);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>resizeCanvas(params.canvasWidth, params.canvasHeight);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function updateBgColor(value) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.backgroundColor = value;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.querySelector('.bg-swatch-row .swatch').style.background = value;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>renderComposition();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function regenerate() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.seed = Math.floor(Math.random() * 999999) + 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// --- deterministic PRNG (mulberry32) so seeded runs are 100% reproducible ---</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function seedRng(seed) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>rngState = seed &gt;&gt;&gt; 0;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function rnd() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>rngState |= 0; rngState = (rngState + 0x6D2B79F5) | 0;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let t = Math.imul(rngState ^ (rngState &gt;&gt;&gt; 15), 1 | rngState);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>t = (t + Math.imul(t ^ (t &gt;&gt;&gt; 7), 61 | t)) ^ t;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return ((t ^ (t &gt;&gt;&gt; 14)) &gt;&gt;&gt; 0) / 4294967296;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function rndRange(a, b) { return a + rnd() * (b - a); }</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function initializeSystem() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>randomSeed(params.seed);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>noiseSeed(params.seed);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>seedRng(params.seed * 2654435761 % 2147483647);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>forms = [];</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>buildRadiusPlan();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>packForms();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>addNestedSatellites();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>assignRingRecipes();</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>renderComposition();</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.querySelector('.loading').style.display = 'none';</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Build a mixed population of radii: a few giants, a mid population, fine dust</p>
-<p class="p1"><span class="Apple-converted-space">        </span>let radiusPlan = [];</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function buildRadiusPlan() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>radiusPlan = [];</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let n = params.formCount;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let maxR = params.maxRadius;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let giants = Math.max(4, Math.round(n * 0.06));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let mediums = Math.round(n * 0.32);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let dust = n - giants - mediums;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; giants; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>radiusPlan.push(rndRange(maxR * 0.55, maxR));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; mediums; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>radiusPlan.push(rndRange(maxR * 0.16, maxR * 0.42));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; dust; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>// power-law bias toward small</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let t = Math.pow(rnd(), 2.6);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>radiusPlan.push(rndRange(maxR * 0.015, maxR * 0.14) + t * maxR * 0.02);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>// largest first so giants claim territory before it fills up</p>
-<p class="p1"><span class="Apple-converted-space">            </span>radiusPlan.sort((a, b) =&gt; b - a);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function packForms() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let attemptsPerForm = 70;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let shrinkSteps = 4;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let radius of radiusPlan) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let r = radius;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let placed = false;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>for (let shrink = 0; shrink &lt;= shrinkSteps &amp;&amp; !placed; shrink++) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>for (let a = 0; a &lt; attemptsPerForm; a++) {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let x = rndRange(-r * 0.15, width + r * 0.15);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let y = rndRange(-r * 0.15, height + r * 0.15);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                        </span>if (isValidPlacement(x, y, r)) {</p>
-<p class="p1"><span class="Apple-converted-space">                            </span>forms.push(makeForm(x, y, r, false));</p>
-<p class="p1"><span class="Apple-converted-space">                            </span>placed = true;</p>
-<p class="p1"><span class="Apple-converted-space">                            </span>break;</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (!placed) r *= 0.8; // shrink into remaining gaps</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function isValidPlacement(x, y, r) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let f of forms) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let d = dist(x, y, f.x, f.y);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let minAllowed = (r + f.r) * (1 - params.overlap);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>if (d &lt; minAllowed) return false;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return true;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Plant smaller children fully inside larger parents: true nesting</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function addNestedSatellites() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let base = forms.slice();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let parent of base) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>if (parent.r &lt; 45) continue;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>if (rnd() &gt; params.nestProb) continue;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>let count = 1 + Math.floor(rnd() * 3);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>for (let i = 0; i &lt; count; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let childR = parent.r * rndRange(0.14, 0.5);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let maxOffset = Math.max(0, parent.r * 0.92 - childR);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let ang = rnd() * TWO_PI;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let off = rnd() * maxOffset;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let cx = parent.x + cos(ang) * off;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let cy = parent.y + sin(ang) * off;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>forms.push(makeForm(cx, cy, childR, true));</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function makeForm(x, y, r, nested) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let paletteLen = params.colorPalette.length;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let primary = Math.floor(rnd() * paletteLen);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let secondary = Math.floor(rnd() * paletteLen);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>x, y, r, nested,</p>
-<p class="p1"><span class="Apple-converted-space">                </span>primary, secondary,</p>
-<p class="p1"><span class="Apple-converted-space">                </span>accentChance: rndRange(0.08, 0.22),</p>
-<p class="p1"><span class="Apple-converted-space">                </span>phaseSeed: rnd() * 1000,</p>
-<p class="p1"><span class="Apple-converted-space">                </span>boldRingIndex: Math.floor(rnd() * 6),</p>
-<p class="p1"><span class="Apple-converted-space">                </span>nucleus: rnd() &lt; 0.6</p>
-<p class="p1"><span class="Apple-converted-space">            </span>};</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Precompute each form's ring radii, weights, colors and render modes</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function assignRingRecipes() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let f of forms) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>f.rings = [];</p>
-<p class="p1"><span class="Apple-converted-space">                </span>f.filledBias = constrain(params.filledAmount + rndRange(-0.2, 0.2), 0, 0.95);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>// spacing driven by user params: base gap scale (ringSpacing) and the</p>
-<p class="p1"><span class="Apple-converted-space">                </span>// growth curve between successive rings (spacingGrowth), echoing</p>
-<p class="p1"><span class="Apple-converted-space">                </span>// tree-ring dendrochronology and mitotic membrane spacing</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let ringCount = Math.max(2, Math.round((f.r / 14) * params.ringDensity));</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let radii = [];</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let cursor = f.r;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let step = f.r * 0.12 * params.ringSpacing;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>for (let i = 0; i &lt; ringCount &amp;&amp; cursor &gt; f.r * 0.06; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>radii.push(cursor);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let jitter = 1 + (noise(f.phaseSeed, i * 0.6) - 0.5) * 0.5;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>step *= (params.spacingGrowth + (noise(i * 0.3, f.phaseSeed) - 0.5) * 0.25);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>step = constrain(step, f.r * 0.02 * params.ringSpacing, f.r * 0.22 * params.ringSpacing);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>cursor -= step * jitter;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                </span>radii.sort((a, b) =&gt; a - b);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>let prevR = 0;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>for (let i = 0; i &lt; radii.length; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let useSecondary = (i % 2 === 1) !== (rnd() &lt; f.accentChance);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let colIdx = useSecondary ? f.secondary : f.primary;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let colIdx2 = useSecondary ? f.primary : f.secondary;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let isBold = (i === f.boldRingIndex);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let baseWeight = map(f.r, 3, params.maxRadius, 0.5, 3.2, true);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let roll = rnd();</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let mode = 'outline';</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (roll &lt; f.filledBias * 0.6) mode = 'filled';</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>else if (roll &lt; f.filledBias) mode = 'gradient';</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let weight, alpha;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (mode === 'outline') {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>weight = isBold ? baseWeight * rndRange(2.0, 3.2) : baseWeight * rndRange(0.5, 1.15);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>alpha = rndRange(150, 235);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>weight = Math.max(1.2, (radii[i] - prevR) * rndRange(0.9, 1.05));</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>alpha = rndRange(190, 255);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                    </span>f.rings.push({</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>radius: radii[i], innerRadius: prevR,</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>colIdx, colIdx2, mode, weight, alpha,</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>gradIdxs: mode === 'gradient' ? buildGradIdxs(colIdx, colIdx2) : null,</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>glow: rnd() &lt; params.glowChance</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>});</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>prevR = radii[i];</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Build a multi-stop color index sequence for richer gradient bands</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function buildGradIdxs(colIdx, colIdx2) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let n = Math.round(params.gradientComplexity);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let paletteLen = params.colorPalette.length;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let idxs = [colIdx];</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let s = 1; s &lt; n - 1; s++) idxs.push(Math.floor(rnd() * paletteLen));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (n &gt; 1) idxs.push(colIdx2);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return idxs;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function drawRingStroke(f, radius, weight, col) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>noFill();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>strokeWeight(weight);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>stroke(col);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>circle(f.x, f.y, radius * 2);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function drawRingDisc(f, radius, col) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>noStroke();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>fill(col);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>circle(f.x, f.y, radius * 2);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function hexWithAlpha(hex, alpha255) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let c = color(hex);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return `rgba(${red(c)}, ${green(c)}, ${blue(c)}, ${alpha255 / 255})`;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Gradient-filled annulus drawn with raw canvas 2D path so it can carry</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// a true radial, multi-stop color blend across several palette hues</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function drawRingAnnulusGradient(f, innerR, outerR, hexStops, alpha255) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let ctx = drawingContext;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.save();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let grad = ctx.createRadialGradient(f.x, f.y, Math.max(innerR, 0.001), f.x, f.y, outerR);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let n = hexStops.length;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; n; i++) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let pos = n === 1 ? 0 : i / (n - 1);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>grad.addColorStop(constrain(pos, 0, 1), hexWithAlpha(hexStops[i], alpha255));</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.fillStyle = grad;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.beginPath();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.arc(f.x, f.y, outerR, 0, Math.PI * 2, false);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.arc(f.x, f.y, Math.max(innerR, 0.0001), 0, Math.PI * 2, true);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.fill('evenodd');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>ctx.restore();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Cheap glow: a few translucent, wider strokes behind the ring instead of</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// an expensive per-shape canvas blur filter (which tanked performance</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// when applied broadly across hundreds of forms)</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function drawGlowHalo(f, radius, hex, alpha) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (params.glowIntensity &lt;= 0) return;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>noFill();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let haloSteps = 3;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let i = haloSteps; i &gt;= 1; i--) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let spread = i * (params.glowIntensity * 0.6);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let a = alpha * (0.16 / i);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>stroke(colorFromHex(hex, a));</p>
-<p class="p1"><span class="Apple-converted-space">                </span>strokeWeight(spread * 2);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>circle(f.x, f.y, radius * 2);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function renderComposition() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>computeRenderPalette();</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>let bg = color(params.backgroundColor);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>background(bg);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>for (let f of forms) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>for (let ring of f.rings) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let alpha = ring.alpha;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (ring.mode === 'filled') {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let hex = renderPalette[ring.colIdx % renderPalette.length];</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>if (ring.glow) drawGlowHalo(f, ring.radius, hex, alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let col = colorFromHex(hex, alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>if (ring.innerRadius &lt; 0.001) {</p>
-<p class="p1"><span class="Apple-converted-space">                            </span>drawRingDisc(f, ring.radius, col);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                            </span>drawRingStroke(f, (ring.radius + ring.innerRadius) / 2, ring.weight, col);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>} else if (ring.mode === 'gradient') {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let hexStops = ring.gradIdxs.map(i =&gt; renderPalette[i % renderPalette.length]);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>if (ring.glow) drawGlowHalo(f, ring.radius, hexStops[0], alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>drawRingAnnulusGradient(f, ring.innerRadius, ring.radius, hexStops, alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let hex = renderPalette[ring.colIdx % renderPalette.length];</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>if (ring.glow) drawGlowHalo(f, ring.radius, hex, alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>let col = colorFromHex(hex, alpha);</p>
-<p class="p1"><span class="Apple-converted-space">                        </span>drawRingStroke(f, ring.radius, ring.weight, col);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">                </span>if (f.nucleus) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>let nc = colorFromPalette(f.primary, 255 * 0.9);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>noStroke();</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>fill(nc);</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>circle(f.x, f.y, f.r * 0.05 + 1.5);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function draw() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>noLoop();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function colorFromHex(hex, alpha) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let c = color(hex);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>c.setAlpha(alpha);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return c;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function colorFromPalette(idx, alpha) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return colorFromHex(renderPalette[idx % renderPalette.length], alpha);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// --- plain-JS hue rotation (independent of p5 colorMode state) ---</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function hexToRgb(hex) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>hex = hex.replace('#', '');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (hex.length === 3) hex = hex.split('').map(ch =&gt; ch + ch).join('');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let num = parseInt(hex, 16);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return { r: (num &gt;&gt; 16) &amp; 255, g: (num &gt;&gt; 8) &amp; 255, b: num &amp; 255 };</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function rgbToHexStr(r, g, b) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return '#' + [r, g, b].map(v =&gt; Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function rgbToHsl(r, g, b) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>r /= 255; g /= 255; b /= 255;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let max = Math.max(r, g, b), min = Math.min(r, g, b);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let h, s, l = (max + min) / 2;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (max === min) { h = s = 0; }</p>
-<p class="p1"><span class="Apple-converted-space">            </span>else {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let d = max - min;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>s = l &gt; 0.5 ? d / (2 - max - min) : d / (max + min);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>switch (max) {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>case r: h = (g - b) / d + (g &lt; b ? 6 : 0); break;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>case g: h = (b - r) / d + 2; break;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>default: h = (r - g) / d + 4;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>}</p>
-<p class="p1"><span class="Apple-converted-space">                </span>h /= 6;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return { h, s, l };</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function hslToRgb(h, s, l) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let r, g, b;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (s === 0) { r = g = b = l; }</p>
-<p class="p1"><span class="Apple-converted-space">            </span>else {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>const hue2rgb = (p, q, t) =&gt; {</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (t &lt; 0) t += 1;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (t &gt; 1) t -= 1;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (t &lt; 1 / 6) return p + (q - p) * 6 * t;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (t &lt; 1 / 2) return q;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>if (t &lt; 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;</p>
-<p class="p1"><span class="Apple-converted-space">                    </span>return p;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>};</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let q = l &lt; 0.5 ? l * (1 + s) : l + s - l * s;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>let p = 2 * l - q;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>r = hue2rgb(p, q, h + 1 / 3);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>g = hue2rgb(p, q, h);</p>
-<p class="p1"><span class="Apple-converted-space">                </span>b = hue2rgb(p, q, h - 1 / 3);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return { r: r * 255, g: g * 255, b: b * 255 };</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function rotateHueHex(hex, degrees) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let { r, g, b } = hexToRgb(hex);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let { h, s, l } = rgbToHsl(r, g, b);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>h = ((h + degrees / 360) % 1 + 1) % 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let rgb = hslToRgb(h, s, l);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>return rgbToHexStr(rgb.r, rgb.g, rgb.b);</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>function computeRenderPalette() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let shift = ((params.colorCycleHue % 360) + 360) % 360;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>renderPalette = shift === 0 ? params.colorPalette.slice()</p>
-<p class="p1"><span class="Apple-converted-space">                </span>: params.colorPalette.map(hex =&gt; rotateHueHex(hex, shift));</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function downloadArt() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>saveCanvas('concentric-bloom-seed-' + params.seed, 'png');</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// UI CONTROL HANDLERS - CUSTOMIZE FOR YOUR PARAMETERS</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function updateParam(paramName, value) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params[paramName] = parseFloat(value);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById(paramName + '-value').textContent = value;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>let lightweight = ['colorCycleHue', 'glowIntensity'];</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (lightweight.includes(paramName)) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>renderComposition();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function renderPaletteGrid() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let grid = document.getElementById('paletteGrid');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>grid.innerHTML = params.colorPalette.map((hex, i) =&gt;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>`&lt;div class="swatch" style="background:${hex};"&gt;&lt;input type="color" value="${hex}" oninput="updatePaletteColor(${i}, this.value)"&gt;&lt;/div&gt;`</p>
-<p class="p1"><span class="Apple-converted-space">            </span>).join('');</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function updatePaletteColor(idx, value) {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.colorPalette[idx] = value;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let swatches = document.querySelectorAll('#paletteGrid .swatch');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (swatches[idx]) swatches[idx].style.background = value;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// SEED CONTROL FUNCTIONS - ALWAYS KEEP THESE</p>
-<p class="p1"><span class="Apple-converted-space">        </span>// ═══════════════════════════════════════════════════════════════════════</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function updateSeedDisplay() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('seed-input').value = params.seed;</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function updateSeed() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let input = document.getElementById('seed-input');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>let newSeed = parseInt(input.value);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>if (newSeed &amp;&amp; newSeed &gt; 0) {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>params.seed = newSeed;</p>
-<p class="p1"><span class="Apple-converted-space">                </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>} else {</p>
-<p class="p1"><span class="Apple-converted-space">                </span>// Reset to current seed if invalid</p>
-<p class="p1"><span class="Apple-converted-space">                </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>}</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function previousSeed() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.seed = Math.max(1, params.seed - 1);</p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function nextSeed() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.seed = params.seed + 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function randomSeedAndUpdate() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params.seed = Math.floor(Math.random() * 999999) + 1;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>function resetParameters() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>params = {...defaultParams, colorPalette: [...defaultParams.colorPalette]};</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('formCount').value = params.formCount;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('formCount-value').textContent = params.formCount;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('maxRadius').value = params.maxRadius;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('maxRadius-value').textContent = params.maxRadius;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('overlap').value = params.overlap;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('overlap-value').textContent = params.overlap;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('ringDensity').value = params.ringDensity;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('ringDensity-value').textContent = params.ringDensity;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('nestProb').value = params.nestProb;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('nestProb-value').textContent = params.nestProb;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('filledAmount').value = params.filledAmount;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('filledAmount-value').textContent = params.filledAmount;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('gradientComplexity').value = params.gradientComplexity;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('gradientComplexity-value').textContent = params.gradientComplexity;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('ringSpacing').value = params.ringSpacing;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('ringSpacing-value').textContent = params.ringSpacing;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('spacingGrowth').value = params.spacingGrowth;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('spacingGrowth-value').textContent = params.spacingGrowth;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('glowChance').value = params.glowChance;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('glowChance-value').textContent = params.glowChance;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('glowIntensity').value = params.glowIntensity;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('glowIntensity-value').textContent = params.glowIntensity;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('bgColor').value = params.backgroundColor;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.querySelector('.bg-swatch-row .swatch').style.background = params.backgroundColor;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('colorCycleHue').value = params.colorCycleHue;</p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('colorCycleHue-value').textContent = params.colorCycleHue;</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>renderPaletteGrid();</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById('canvasPreset').value = 'fit';</p>
-<p class="p1"><span class="Apple-converted-space">            </span>computeCanvasSizeForPreset('fit');</p>
-<p class="p1"><span class="Apple-converted-space">            </span>resizeCanvas(params.canvasWidth, params.canvasHeight);</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">            </span>initializeSystem();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>}</p>
-<p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">        </span>// Initialize UI on load</p>
-<p class="p1"><span class="Apple-converted-space">        </span>window.addEventListener('load', function() {</p>
-<p class="p1"><span class="Apple-converted-space">            </span>updateSeedDisplay();</p>
-<p class="p1"><span class="Apple-converted-space">        </span>});</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;/script&gt;</p>
-<p class="p1">&lt;/body&gt;</p>
-<p class="p1">&lt;/html&gt;</p>
+<div id="app">
+
+  <div id="viewport">
+    <div id="frame">
+      <canvas id="dispCanvas"></canvas>
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <div id="sprockets"></div>
+      <div id="frameLabel">HALFTONE · PROOF 01</div>
+    </div>
+
+    <div id="topbar">
+      <div class="brand"><span class="dot" id="liveDot"></span>HALFTONE</div>
+      <div class="iconbtn" id="btnPlay" title="Play / pause (Space)">
+        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+      <div class="iconbtn" id="btnSnap" title="Save frame (S)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h3l2-2h6l2 2h3v13H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      </div>
+      <div class="iconbtn" id="btnHideUI" title="Hide interface (H)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.5 5.3A9.6 9.6 0 0 1 12 5c5 0 9 4 10.5 7-1 1.8-2.4 3.4-4.1 4.6M6.1 6.1C4.2 7.4 2.7 9.1 1.5 11c1.5 3 5.5 7 10.5 7 1.1 0 2.1-.2 3.1-.5"/></svg>
+      </div>
+      <div class="iconbtn" id="btnFullscreen" title="Fullscreen (F)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      </div>
+      <div class="iconbtn" id="btnDrawer" title="Controls (C)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </div>
+    </div>
+
+    <div id="hud-readout">
+      <div><b id="fpsVal">--</b> fps &nbsp;·&nbsp; <span id="msVal">--</span> ms/f</div>
+      <div id="resVal">— × —</div>
+      <div id="histWrap"><canvas id="histCanvas" width="120" height="28"></canvas></div>
+    </div>
+
+    <div id="toast"></div>
+  </div>
+
+  <div id="drawer">
+    <div id="drawerHead">
+      <span class="title">CONTROL PANEL</span>
+      <div class="iconbtn" id="btnDrawerClose" style="width:26px;height:26px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </div>
+    </div>
+    <div id="drawerScroll">
+
+      <!-- SOURCE -->
+      <div class="section">
+        <div class="section-head"><span class="idx">01</span>&nbsp;SOURCE</div>
+        <div class="tabs">
+          <div class="tab active" data-src="test">Test</div>
+          <div class="tab" data-src="webcam">Cam</div>
+          <div class="tab" data-src="image">Image</div>
+          <div class="tab" data-src="gif">GIF</div>
+          <div class="tab" data-src="video">Video</div>
+        </div>
+
+        <div id="srcPanel-test" class="src-panel">
+          <div class="hint">Procedural test pattern — tune parameters before connecting a live source.</div>
+        </div>
+
+        <div id="srcPanel-webcam" class="src-panel" style="display:none;">
+          <div class="field"><select id="camSelect"><option>Default camera</option></select></div>
+          <button class="btn primary" id="btnCamStart">Start camera</button>
+          <div class="status-line" id="camStatus"></div>
+        </div>
+
+        <div id="srcPanel-image" class="src-panel" style="display:none;">
+          <div class="dropzone" id="dropImage">Drop image or click to upload</div>
+          <input type="file" id="fileImage" accept="image/*" style="display:none;">
+          <div class="status-line" id="imageStatus"></div>
+        </div>
+
+        <div id="srcPanel-gif" class="src-panel" style="display:none;">
+          <div class="dropzone" id="dropGif">Drop .gif or click to upload</div>
+          <input type="file" id="fileGif" accept="image/gif" style="display:none;">
+          <div class="status-line" id="gifStatus"></div>
+        </div>
+
+        <div id="srcPanel-video" class="src-panel" style="display:none;">
+          <div class="dropzone" id="dropVideo">Drop video or click to upload</div>
+          <input type="file" id="fileVideo" accept="video/*" style="display:none;">
+          <div class="row" style="margin-top:8px;">
+            <button class="btn" id="btnVidPlay">Play / pause</button>
+          </div>
+          <div class="status-line" id="videoStatus"></div>
+        </div>
+      </div>
+
+      <!-- LAYERS -->
+      <div class="section">
+        <div class="section-head"><span class="idx">02</span>&nbsp;LAYERS</div>
+        <div id="layersList"></div>
+        <button class="btn addLayerBtn" id="btnAddLayer">+ Add layer</button>
+        <div class="hint" id="layerCountHint"></div>
+      </div>
+
+      <!-- CANVAS -->
+      <div class="section">
+        <div class="section-head"><span class="idx">03</span>&nbsp;CANVAS</div>
+        <div class="field">
+          <label style="margin-bottom:7px;">Aspect ratio</label>
+          <div class="grid4">
+            <div class="ar-btn active" data-ar="fill">Fill</div>
+            <div class="ar-btn" data-ar="1:1">1:1</div>
+            <div class="ar-btn" data-ar="4:3">4:3</div>
+            <div class="ar-btn" data-ar="3:4">3:4</div>
+            <div class="ar-btn" data-ar="16:9">16:9</div>
+            <div class="ar-btn" data-ar="9:16">9:16</div>
+            <div class="ar-btn" data-ar="3:2">3:2</div>
+            <div class="ar-btn" data-ar="custom">Custom</div>
+          </div>
+          <div class="row" id="customArRow" style="display:none; margin-top:8px;">
+            <input type="number" class="text-input" id="arW" value="5" min="1" max="99" style="text-align:center;">
+            <span style="color:var(--paper-mute);">:</span>
+            <input type="number" class="text-input" id="arH" value="4" min="1" max="99" style="text-align:center;">
+          </div>
+        </div>
+        <div class="field">
+          <label>Resolution <span class="val" id="pixelScaleVal">4×</span></label>
+          <input type="range" id="pixelScale" min="1" max="20" value="4" step="1">
+        </div>
+        <label class="check">
+          <input type="checkbox" id="adaptiveRes" checked><span class="box"></span> Adaptive resolution
+        </label>
+      </div>
+
+      <!-- ACTIONS -->
+      <div class="section">
+        <div class="section-head"><span class="idx">04</span>&nbsp;ACTIONS</div>
+        <div class="grid2">
+          <button class="btn" id="btnReset">Reset</button>
+          <button class="btn primary" id="btnDownload">Save PNG</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- hidden media plumbing -->
+<video id="videoEl" muted playsinline style="display:none;"></video>
+<img id="imgEl" style="display:none;">
+<canvas id="gifCanvas" style="display:none;"></canvas>
+<canvas id="patchCanvas" style="display:none;"></canvas>
+<canvas id="procCanvas" style="display:none;"></canvas>
+<canvas id="resultCanvas" style="display:none;"></canvas>
+
+<!-- ============================================================
+     WORKER SOURCE — inert script tag, blobbed into a real Worker
+     ============================================================ -->
+<script id="worker-src" type="javascript/worker">
+"use strict";
+
+const KERNELS_RAW = {
+  "floyd-steinberg": { div:16, off:[[1,0,7],[-1,1,3],[0,1,5],[1,1,1]] },
+  "atkinson":        { div:8,  off:[[1,0,1],[2,0,1],[-1,1,1],[0,1,1],[1,1,1],[0,2,1]] },
+  "burkes":          { div:32, off:[[1,0,8],[2,0,4],[-2,1,2],[-1,1,4],[0,1,8],[1,1,4],[2,1,2]] },
+  "sierra3":         { div:32, off:[[1,0,5],[2,0,3],[-2,1,2],[-1,1,4],[0,1,5],[1,1,4],[2,1,2],[-1,2,2],[0,2,3],[1,2,2]] },
+  "sierra2":         { div:16, off:[[1,0,4],[2,0,3],[-2,1,1],[-1,1,2],[0,1,3],[1,1,2],[2,1,1]] },
+  "sierra-lite":     { div:4,  off:[[1,0,2],[-1,1,1],[0,1,1]] },
+  "stucki":          { div:42, off:[[1,0,8],[2,0,4],[-2,1,2],[-1,1,4],[0,1,8],[1,1,4],[2,1,2],[-2,2,1],[-1,2,2],[0,2,4],[1,2,2],[2,2,1]] },
+  "jjn":             { div:48, off:[[1,0,7],[2,0,5],[-2,1,3],[-1,1,5],[0,1,7],[1,1,5],[2,1,3],[-2,2,1],[-1,2,3],[0,2,5],[1,2,3],[2,2,1]] }
+};
+const KERNELS = {};
+for(const name in KERNELS_RAW){
+  const raw = KERNELS_RAW[name];
+  const len = raw.off.length;
+  const dx = new Int32Array(len), dy = new Int32Array(len), cf = new Float32Array(len);
+  for(let i=0;i<len;i++){ dx[i]=raw.off[i][0]; dy[i]=raw.off[i][1]; cf[i]=raw.off[i][2]/raw.div; }
+  KERNELS[name] = { dx, dy, cf, len };
+}
+
+function makeBayer(n){
+  if(n===1) return [[0]];
+  const half = makeBayer(n/2);
+  const hs = n/2;
+  const m = new Array(n);
+  for(let i=0;i<n;i++) m[i]=new Array(n).fill(0);
+  for(let y=0;y<hs;y++){
+    for(let x=0;x<hs;x++){
+      const v = half[y][x]*4;
+      m[y][x]=v; m[y][x+hs]=v+2; m[y+hs][x]=v+3; m[y+hs][x+hs]=v+1;
+    }
+  }
+  return m;
+}
+function flattenBayer(m,n){
+  const f = new Float32Array(n*n);
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) f[y*n+x]=m[y][x];
+  return f;
+}
+const BAYER_N = { 2:makeBayer(2), 4:makeBayer(4), 8:makeBayer(8) };
+const BAYER = { 2:flattenBayer(BAYER_N[2],2), 4:flattenBayer(BAYER_N[4],4), 8:flattenBayer(BAYER_N[8],8) };
+
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function clamp(v,lo,hi){ return v<lo?lo:(v>hi?hi:v); }
+
+function nearestPaletteIndex(r,g,b,palette){
+  let best=0, bestD=Infinity;
+  for(let i=0;i<palette.length;i++){
+    const p=palette[i];
+    const dr=r-p[0], dg=g-p[1], db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bestD){ bestD=d; best=i; }
+  }
+  return best;
+}
+
+/* ---------------- circuit-bent false color (HSV hue-cycle) ---------------- */
+function hsvToRgb(h,s,v){
+  h = ((h%1)+1)%1;
+  const i = Math.floor(h*6);
+  const f = h*6-i;
+  const p = v*(1-s), q = v*(1-f*s), t = v*(1-(1-f)*s);
+  let r,g,b;
+  switch(i%6){
+    case 0: r=v; g=t; b=p; break;
+    case 1: r=q; g=v; b=p; break;
+    case 2: r=p; g=v; b=t; break;
+    case 3: r=p; g=q; b=v; break;
+    case 4: r=t; g=p; b=v; break;
+    default: r=v; g=p; b=q; break;
+  }
+  return [r*255, g*255, b*255];
+}
+function circuitColor(t, bendPhase){
+  // sweep ~0.85 of the wheel so the top/bottom bands stay visually distinct
+  // rather than wrapping back to an identical hue.
+  const hue = t*0.85 + bendPhase;
+  const v = 0.55 + 0.45*t;
+  return hsvToRgb(hue, 0.92, v);
+}
+function lerp3(a,b,t){ return [ a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t ]; }
+
+// per-level color lookup table — computed once per layer per frame (levels <= 8),
+// never inside the per-pixel hot loop.
+function buildLevelColors(colorMode, levels, bg, fg, duoA, duoB, bendPhase){
+  const lm1 = (levels-1)||1;
+  const lut = new Array(levels);
+  for(let i=0;i<levels;i++){
+    const t = i/lm1;
+    if(colorMode==="duotone") lut[i]=lerp3(duoA,duoB,t);
+    else if(colorMode==="circuit") lut[i]=circuitColor(t, bendPhase);
+    else lut[i]=lerp3(bg,fg,t);
+  }
+  return lut;
+}
+
+function buildHistogramLum(buf, n){
+  const hist = new Uint32Array(64);
+  for(let i=0;i<n;i++){
+    const o=i*4;
+    const lum = 0.2126*buf[o]+0.7152*buf[o+1]+0.0722*buf[o+2];
+    const b = lum>>2;
+    hist[b>63?63:b]++;
+  }
+  return hist;
+}
+
+/* ---------------- blend modes ---------------- */
+// numeric codes resolved once per layer, outside the per-pixel loop.
+const BLEND_CODES = { normal:0, multiply:1, screen:2, overlay:3, darken:4, lighten:5, difference:6, exclusion:7, add:8 };
+function blendChannel(code, base, top){
+  switch(code){
+    case 1: return (base*top)/255;
+    case 2: return 255-((255-base)*(255-top))/255;
+    case 3: return base<128 ? (2*base*top)/255 : 255-(2*(255-base)*(255-top))/255;
+    case 4: return base<top?base:top;
+    case 5: return base>top?base:top;
+    case 6: return Math.abs(base-top);
+    case 7: return base+top-(2*base*top)/255;
+    case 8: { const s=base+top; return s>255?255:s; }
+    default: return top;
+  }
+}
+function compositeInto(composite, layerOut, blendCode, opacity, n){
+  for(let i=0;i<n;i++){
+    const o=i*4;
+    const br=composite[o], bg2=composite[o+1], bb=composite[o+2];
+    const tr=layerOut[o], tg=layerOut[o+1], tb=layerOut[o+2];
+    composite[o]   = br + (blendChannel(blendCode,br,tr)-br)*opacity;
+    composite[o+1] = bg2 + (blendChannel(blendCode,bg2,tg)-bg2)*opacity;
+    composite[o+2] = bb + (blendChannel(blendCode,bb,tb)-bb)*opacity;
+  }
+}
+
+/* ---------------- per-layer offset (wraparound shift) ---------------- */
+function shiftSource(data, width, height, offsetX, offsetY, dest){
+  const ox = ((offsetX%width)+width)%width;
+  const oy = ((offsetY%height)+height)%height;
+  if(ox===0 && oy===0){ dest.set(data); return dest; }
+  for(let y=0;y<height;y++){
+    const sy = (y-oy+height)%height;
+    for(let x=0;x<width;x++){
+      const sx = (x-ox+width)%width;
+      const si=(sy*width+sx)*4, di=(y*width+x)*4;
+      dest[di]=data[si]; dest[di+1]=data[si+1]; dest[di+2]=data[si+2]; dest[di+3]=data[si+3];
+    }
+  }
+  return dest;
+}
+
+/* ---------------- reusable scratch buffers (avoid per-frame allocation) ---------------- */
+const scratch = { n:0, gray:null, buf:null, rC:null, gC:null, bC:null, layerOut:null, composite:null, shifted:null };
+function ensureScratch(n){
+  if(scratch.n!==n){
+    scratch.n=n;
+    scratch.gray = new Float32Array(n);
+    scratch.buf  = new Float32Array(n);
+    scratch.rC   = new Float32Array(n);
+    scratch.gC   = new Float32Array(n);
+    scratch.bC   = new Float32Array(n);
+    scratch.layerOut = new Uint8ClampedArray(n*4);
+    scratch.composite = new Uint8ClampedArray(n*4);
+    scratch.shifted = new Uint8ClampedArray(n*4);
+  }
+  return scratch;
+}
+
+/* ---------------- single-layer render ---------------- */
+function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
+  const { algo, threshold, gain, weight, levels, colorMode, fg, bg, colorA, colorB,
+          palette, invert, serpentine, circuitBend } = layer;
+  const n = width*height;
+  const isDiffusion = !!KERNELS[algo];
+  const isOrdered = algo==="bayer2"||algo==="bayer4"||algo==="bayer8";
+  const isRandom = algo==="random";
+  const isHalftone = algo==="halftone";
+  const isFlat = algo==="threshold";
+
+  const bayerN = algo==="bayer2"?2:(algo==="bayer4"?4:8);
+  const bayerM = isOrdered ? BAYER[bayerN] : null;
+  const rng = mulberry32((noiseSeed>>>0) || 1);
+
+  const thrShift = threshold-128;
+  const gainF = gain;
+  const lm1 = (levels-1)||1;
+  const step = 255/lm1;
+
+  const grayAdj = S.gray;
+  for(let i=0;i<n;i++){
+    const o=i*4;
+    let lum = 0.2126*data[o] + 0.7152*data[o+1] + 0.0722*data[o+2];
+    if(invert) lum = 255-lum;
+    lum = (lum-128)*gainF + 128 + thrShift;
+    grayAdj[i] = lum<0?0:(lum>255?255:lum);
+  }
+
+  const out = outBuf;
+  for(let i=0;i<n;i++) out[i*4+3]=255;
+
+  function biasAt(x,y){
+    if(isOrdered){
+      const bv = bayerM[(y%bayerN)*bayerN + (x%bayerN)];
+      const norm = (bv+0.5)/(bayerN*bayerN) - 0.5;
+      return norm*weight*step;
+    }
+    if(isRandom) return (rng()-0.5)*weight*step;
+    return 0;
+  }
+
+  if(isHalftone){
+    const cell = Math.max(3, Math.round(6*(weight<=0?0.2:weight)));
+    if(colorMode==="fullcolor"){
+      const rC=S.rC, gC=S.gC, bC=S.bC;
+      for(let i=0;i<n;i++){
+        const o=i*4;
+        let r=data[o], g=data[o+1], b=data[o+2];
+        if(invert){ r=255-r; g=255-g; b=255-b; }
+        r=(r-128)*gainF+128+thrShift; g=(g-128)*gainF+128+thrShift; b=(b-128)*gainF+128+thrShift;
+        rC[i]=clamp(r,0,255); gC[i]=clamp(g,0,255); bC[i]=clamp(b,0,255);
+      }
+      for(let cy=0; cy<height; cy+=cell){
+        for(let cx=0; cx<width; cx+=cell){
+          let sr=0,sg=0,sb=0,cnt=0;
+          const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+          for(let y=cy;y<yEnd;y++) for(let x=cx;x<xEnd;x++){ const i=y*width+x; sr+=rC[i]; sg+=gC[i]; sb+=bC[i]; cnt++; }
+          const maxR = cell*0.62;
+          const rr = clamp(1-(sr/cnt)/255,0,1)*maxR, rg2 = clamp(1-(sg/cnt)/255,0,1)*maxR, rb = clamp(1-(sb/cnt)/255,0,1)*maxR;
+          const ccx = cx+cell/2, ccy=cy+cell/2;
+          for(let y=cy;y<yEnd;y++){
+            for(let x=cx;x<xEnd;x++){
+              const dx=x-ccx, dy=y-ccy, d2=dx*dx+dy*dy;
+              const o=(y*width+x)*4;
+              out[o]  = d2<=rr*rr ? 255:0;
+              out[o+1]= d2<=rg2*rg2 ? 255:0;
+              out[o+2]= d2<=rb*rb ? 255:0;
+            }
+          }
+        }
+      }
+    } else if(colorMode==="palette"){
+      const pal = palette;
+      let dark=pal[0], light=pal[0], dl=999, ll=-1;
+      for(const p of pal){
+        const lum=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
+        if(lum<dl){ dl=lum; dark=p; } if(lum>ll){ ll=lum; light=p; }
+      }
+      haltoneMonoPass(out, grayAdj, width, height, cell, dark, light);
+    } else {
+      const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
+      haltoneMonoPass(out, grayAdj, width, height, cell, lut[0], lut[1]);
+    }
+  } else if(colorMode==="fullcolor" && isDiffusion){
+    const kernel = KERNELS[algo];
+    const chans = [S.rC, S.gC, S.bC];
+    for(let i=0;i<n;i++){
+      const o=i*4;
+      for(let c=0;c<3;c++){
+        let v = data[o+c];
+        if(invert) v = 255-v;
+        v = (v-128)*gainF + 128 + thrShift;
+        chans[c][i]=clamp(v,0,255);
+      }
+    }
+    for(let c=0;c<3;c++) diffuseChannel(chans[c], width, height, kernel, step, lm1, weight, serpentine);
+    for(let i=0;i<n;i++){
+      const o=i*4;
+      out[o]=chans[0][i]; out[o+1]=chans[1][i]; out[o+2]=chans[2][i];
+    }
+  } else if(colorMode==="fullcolor"){
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x, o=i*4;
+        const bias = isFlat?0:biasAt(x,y);
+        for(let c=0;c<3;c++){
+          let v = data[o+c];
+          if(invert) v = 255-v;
+          v = (v-128)*gainF + 128 + thrShift;
+          if(v<0) v=0; else if(v>255) v=255;
+          let level = Math.round((v+bias)/step);
+          if(level<0) level=0; else if(level>lm1) level=lm1;
+          out[o+c]=level*step;
+        }
+      }
+    }
+  } else if(colorMode==="palette"){
+    const pal = palette;
+    if(isDiffusion){
+      const kernel = KERNELS[algo];
+      const rC=S.rC, gC=S.gC, bC=S.bC;
+      for(let i=0;i<n;i++){
+        const o=i*4;
+        let r=data[o], g=data[o+1], b=data[o+2];
+        if(invert){ r=255-r; g=255-g; b=255-b; }
+        r=(r-128)*gainF+128+thrShift; g=(g-128)*gainF+128+thrShift; b=(b-128)*gainF+128+thrShift;
+        rC[i]=clamp(r,0,255); gC[i]=clamp(g,0,255); bC[i]=clamp(b,0,255);
+      }
+      for(let y=0;y<height;y++){
+        const flip = serpentine && (y%2!==0);
+        const xStart = flip? width-1:0, xEnd = flip? -1:width, xStep = flip? -1:1;
+        for(let x=xStart; x!==xEnd; x+=xStep){
+          const i=y*width+x;
+          const idx = nearestPaletteIndex(rC[i],gC[i],bC[i],pal);
+          const chosen = pal[idx];
+          const er=(rC[i]-chosen[0])*weight, eg=(gC[i]-chosen[1])*weight, eb=(bC[i]-chosen[2])*weight;
+          out[i*4]=chosen[0]; out[i*4+1]=chosen[1]; out[i*4+2]=chosen[2];
+          for(let k=0;k<kernel.len;k++){
+            const ddx = flip? -kernel.dx[k] : kernel.dx[k];
+            const nx=x+ddx, ny=y+kernel.dy[k];
+            if(nx<0||nx>=width||ny<0||ny>=height) continue;
+            const ni=ny*width+nx;
+            const f=kernel.cf[k];
+            let nr=rC[ni]+er*f, ng=gC[ni]+eg*f, nb=bC[ni]+eb*f;
+            rC[ni]=nr<0?0:(nr>255?255:nr); gC[ni]=ng<0?0:(ng>255?255:ng); bC[ni]=nb<0?0:(nb>255?255:nb);
+          }
+        }
+      }
+    } else {
+      for(let y=0;y<height;y++){
+        for(let x=0;x<width;x++){
+          const i=y*width+x, o=i*4;
+          let r=data[o], g=data[o+1], b=data[o+2];
+          if(invert){ r=255-r; g=255-g; b=255-b; }
+          r=(r-128)*gainF+128+thrShift; g=(g-128)*gainF+128+thrShift; b=(b-128)*gainF+128+thrShift;
+          const bias = isFlat?0:biasAt(x,y);
+          const idx = nearestPaletteIndex(clamp(r+bias,0,255),clamp(g+bias,0,255),clamp(b+bias,0,255),pal);
+          const chosen = pal[idx];
+          out[o]=chosen[0]; out[o+1]=chosen[1]; out[o+2]=chosen[2];
+        }
+      }
+    }
+  } else if(isDiffusion || isFlat){
+    const lut = buildLevelColors(colorMode, levels, bg, fg, colorA, colorB, circuitBend);
+    if(isFlat){
+      for(let i=0;i<n;i++){
+        const v = grayAdj[i];
+        let level = Math.round(v/step);
+        if(level<0) level=0; else if(level>lm1) level=lm1;
+        const col = lut[level];
+        const o=i*4; out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+      }
+    } else {
+      const kernel = KERNELS[algo];
+      const buf = S.buf;
+      buf.set(grayAdj);
+      for(let y=0;y<height;y++){
+        const flip = serpentine && (y%2!==0);
+        const xStart = flip? width-1:0, xEnd = flip? -1:width, xStep = flip? -1:1;
+        for(let x=xStart; x!==xEnd; x+=xStep){
+          const i=y*width+x;
+          const v = buf[i];
+          let level = Math.round(v/step);
+          if(level<0) level=0; else if(level>lm1) level=lm1;
+          const outv = level*step;
+          const col = lut[level];
+          const o=i*4; out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+          const err = (v-outv)*weight;
+          for(let k=0;k<kernel.len;k++){
+            const ddx = flip? -kernel.dx[k] : kernel.dx[k];
+            const nx=x+ddx, ny=y+kernel.dy[k];
+            if(nx<0||nx>=width||ny<0||ny>=height) continue;
+            const ni=ny*width+nx;
+            let nv = buf[ni]+err*kernel.cf[k];
+            buf[ni] = nv<0?0:(nv>255?255:nv);
+          }
+        }
+      }
+    }
+  } else {
+    const lut = buildLevelColors(colorMode, levels, bg, fg, colorA, colorB, circuitBend);
+    for(let y=0;y<height;y++){
+      for(let x=0;x<width;x++){
+        const i=y*width+x;
+        const bias = biasAt(x,y);
+        const v = grayAdj[i]+bias;
+        let level = Math.round(v/step);
+        if(level<0) level=0; else if(level>lm1) level=lm1;
+        const col = lut[level];
+        const o=i*4; out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+      }
+    }
+  }
+  return out;
+}
+
+function haltoneMonoPass(out, grayAdj, width, height, cell, cLo, cHi){
+  for(let cy=0; cy<height; cy+=cell){
+    for(let cx=0; cx<width; cx+=cell){
+      let sum=0, cnt=0;
+      const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+      for(let y=cy;y<yEnd;y++) for(let x=cx;x<xEnd;x++){ sum+=grayAdj[y*width+x]; cnt++; }
+      const avg = sum/cnt;
+      const maxR = cell*0.62;
+      const r = clamp(1-avg/255,0,1)*maxR;
+      const ccx = cx+cell/2, ccy = cy+cell/2;
+      for(let y=cy;y<yEnd;y++){
+        for(let x=cx;x<xEnd;x++){
+          const dx=x-ccx, dy=y-ccy;
+          const inside = (dx*dx+dy*dy) <= r*r;
+          const col = inside? cHi : cLo;
+          const o=(y*width+x)*4;
+          out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+        }
+      }
+    }
+  }
+}
+
+function diffuseChannel(buf, width, height, kernel, step, lm1, weight, serpentine){
+  for(let y=0;y<height;y++){
+    const flip = serpentine && (y%2!==0);
+    const xStart = flip? width-1:0, xEnd = flip? -1:width, xStep = flip? -1:1;
+    for(let x=xStart; x!==xEnd; x+=xStep){
+      const i=y*width+x;
+      const v = buf[i];
+      let level = Math.round(v/step);
+      if(level<0) level=0; else if(level>lm1) level=lm1;
+      const outv = level*step;
+      buf[i]=outv;
+      const err = (v-outv)*weight;
+      for(let k=0;k<kernel.len;k++){
+        const ddx = flip? -kernel.dx[k] : kernel.dx[k];
+        const nx=x+ddx, ny=y+kernel.dy[k];
+        if(nx<0||nx>=width||ny<0||ny>=height) continue;
+        const ni=ny*width+nx;
+        let nv = buf[ni] + err*kernel.cf[k];
+        buf[ni] = nv<0?0:(nv>255?255:nv);
+      }
+    }
+  }
+}
+
+/* ---------------- top-level: multi-layer render + composite ---------------- */
+function process(msg){
+  const { buffer, width, height, layers, noiseSeed } = msg;
+  const data = new Uint8ClampedArray(buffer);
+  const n = width*height;
+  const S = ensureScratch(n);
+
+  const composite = S.composite;
+  for(let i=0;i<n*4;i+=4){ composite[i]=0; composite[i+1]=0; composite[i+2]=0; composite[i+3]=255; }
+
+  for(let li=0; li<layers.length; li++){
+    const layer = layers[li];
+    if(!layer.enabled) continue;
+    let src = data;
+    if(layer.offsetX || layer.offsetY){
+      src = shiftSource(data, width, height, layer.offsetX, layer.offsetY, S.shifted);
+    }
+    const layerOut = renderLayer(src, width, height, layer, noiseSeed + li*7919 + 1, S, S.layerOut);
+    const code = BLEND_CODES[layer.blendMode] !== undefined ? BLEND_CODES[layer.blendMode] : 0;
+    compositeInto(composite, layerOut, code, layer.opacity==null?1:layer.opacity, n);
+  }
+
+  const histogram = buildHistogramLum(composite, n);
+  const out = new Uint8ClampedArray(n*4);
+  out.set(composite);
+  return { out, histogram };
+}
+
+self.onmessage = function(e){
+  const msg = e.data;
+  if(msg.type!=="process") return;
+  const t0 = performance.now();
+  const { out, histogram } = process(msg);
+  const procMs = performance.now()-t0;
+  self.postMessage({ type:"result", buffer:out.buffer, width:msg.width, height:msg.height, histogram, procMs, frame:msg.frame }, [out.buffer]);
+};
+
+</script>
+
+<!-- ============================================================
+     GIF DECODER — self-contained GIF89a/LZW parser (no CDN dependency)
+     ============================================================ -->
+<script>
+"use strict";
+function parseGIF(arrayBuffer){
+  const bytes = new Uint8Array(arrayBuffer);
+  let p = 0;
+  function u8(){ return bytes[p++]; }
+  function u16(){ const v = bytes[p] | (bytes[p+1]<<8); p+=2; return v; }
+
+  const sig = String.fromCharCode(bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5]);
+  if(sig!=="GIF87a" && sig!=="GIF89a") throw new Error("Not a GIF file");
+  p = 6;
+
+  const screenW = u16(), screenH = u16();
+  const packed = u8();
+  const gctFlag = !!(packed & 0x80);
+  const gctSize = gctFlag ? (2 << (packed & 0x07)) : 0;
+  u8(); u8();
+
+  let globalColorTable = null;
+  if(gctFlag){
+    globalColorTable = new Uint8Array(gctSize*3);
+    for(let i=0;i<gctSize*3;i++) globalColorTable[i]=u8();
+  }
+
+  function skipSubBlocks(){ while(true){ const len=u8(); if(!len) break; p+=len; } }
+
+  const frames = [];
+  let gce = null;
+
+  while(p < bytes.length){
+    const blockType = u8();
+    if(blockType === 0x21){
+      const label = u8();
+      if(label === 0xF9){
+        u8();
+        const packedGCE = u8();
+        const delay = u16();
+        const transparentIndex = u8();
+        u8();
+        gce = { disposal:(packedGCE>>2)&0x07, transparentFlag:!!(packedGCE&0x01), transparentIndex, delay: delay*10 };
+      } else if(label === 0x01){
+        const bs = u8(); p += bs; skipSubBlocks();
+      } else {
+        skipSubBlocks();
+      }
+    } else if(blockType === 0x2C){
+      const left=u16(), top=u16(), w=u16(), h=u16();
+      const packedID = u8();
+      const localCTFlag = !!(packedID&0x80);
+      const interlaced = !!(packedID&0x40);
+      const lctSize = localCTFlag ? (2 << (packedID&0x07)) : 0;
+      let colorTable = globalColorTable;
+      if(localCTFlag){
+        colorTable = new Uint8Array(lctSize*3);
+        for(let i=0;i<lctSize*3;i++) colorTable[i]=u8();
+      }
+      const minCodeSize = u8();
+      let dataLen = 0;
+      const chunks = [];
+      while(true){
+        const len = u8();
+        if(!len) break;
+        chunks.push(bytes.subarray(p, p+len));
+        p += len; dataLen += len;
+      }
+      const data = new Uint8Array(dataLen);
+      { let off=0; for(const c of chunks){ data.set(c, off); off+=c.length; } }
+
+      const rawIndices = lzwDecode(data, minCodeSize, w*h);
+      const indices = interlaced ? deinterlaceGif(rawIndices, w, h) : rawIndices;
+
+      const transparentFlag = gce ? gce.transparentFlag : false;
+      const transparentIndex = gce ? gce.transparentIndex : -1;
+      const patch = new Uint8ClampedArray(w*h*4);
+      for(let i=0;i<w*h;i++){
+        const idx = indices[i];
+        const o=i*4;
+        if(transparentFlag && idx===transparentIndex){ patch[o+3]=0; }
+        else { const c = idx*3; patch[o]=colorTable[c]; patch[o+1]=colorTable[c+1]; patch[o+2]=colorTable[c+2]; patch[o+3]=255; }
+      }
+
+      frames.push({
+        dims: { left, top, width:w, height:h }, patch,
+        delay: gce ? Math.max(gce.delay, 20) : 100,
+        disposalType: gce ? gce.disposal : 0
+      });
+      gce = null;
+    } else if(blockType === 0x3B){
+      break;
+    } else {
+      break;
+    }
+  }
+  return { lsd: { width:screenW, height:screenH }, frames };
+}
+
+function lzwDecode(data, minCodeSize, pixelCount){
+  const clearCode = 1 << minCodeSize;
+  const endCode = clearCode + 1;
+  const output = new Uint8Array(pixelCount);
+  let outPos = 0;
+  let dict, codeSize, nextCode;
+  function resetDict(){
+    dict = new Array(4096);
+    for(let i=0;i<clearCode;i++) dict[i] = [i];
+    dict[clearCode] = null; dict[endCode] = null;
+    codeSize = minCodeSize+1; nextCode = endCode+1;
+  }
+  resetDict();
+  let bitBuf=0, bitCount=0, bytePos=0;
+  function readCode(){
+    while(bitCount < codeSize){
+      if(bytePos >= data.length) return endCode;
+      bitBuf |= data[bytePos++] << bitCount;
+      bitCount += 8;
+    }
+    const code = bitBuf & ((1<<codeSize)-1);
+    bitBuf >>= codeSize; bitCount -= codeSize;
+    return code;
+  }
+  let prev = null;
+  while(outPos < pixelCount){
+    const code = readCode();
+    if(code === clearCode){ resetDict(); prev=null; continue; }
+    if(code === endCode) break;
+    let entry;
+    if(code < nextCode && dict[code]) entry = dict[code];
+    else if(code === nextCode && prev) entry = prev.concat([prev[0]]);
+    else break;
+    for(let i=0;i<entry.length && outPos<pixelCount;i++) output[outPos++]=entry[i];
+    if(prev && nextCode < 4096){
+      dict[nextCode] = prev.concat([entry[0]]);
+      nextCode++;
+      if(nextCode === (1<<codeSize) && codeSize<12) codeSize++;
+    }
+    prev = entry;
+  }
+  return output;
+}
+
+function deinterlaceGif(indices, width, height){
+  const output = new Uint8Array(indices.length);
+  const starts=[0,4,2,1], steps=[8,8,4,2];
+  let srcRow = 0;
+  for(let pass=0; pass<4; pass++){
+    for(let row=starts[pass]; row<height; row+=steps[pass]){
+      for(let col=0; col<width; col++) output[row*width+col] = indices[srcRow*width+col];
+      srcRow++;
+    }
+  }
+  return output;
+}
+</script>
+
+<!-- ============================================================
+     MAIN SCRIPT
+     ============================================================ -->
+<script>
+(function(){
+"use strict";
+
+/* ---------------- palettes ---------------- */
+const PALETTES = {
+  gameboy: [[15,56,15],[48,98,48],[139,172,15],[155,188,15]],
+  cga: [[0,0,0],[255,255,255],[85,255,255],[255,85,255],[255,85,85],[85,255,85],[255,255,85],[85,85,255],
+        [170,0,0],[0,170,0],[0,0,170],[170,170,0],[170,0,170],[0,170,170],[85,85,85],[170,170,170]],
+  print: [[20,17,13],[237,231,218]],
+  sepia: [[30,20,14],[92,62,42],[161,122,84],[224,201,168]]
+};
+
+function hexToRgb(h){
+  const v = parseInt(h.replace('#',''),16);
+  return [ (v>>16)&255, (v>>8)&255, v&255 ];
+}
+function rgbToHex(c){
+  return '#'+c.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');
+}
+
+/* ---------------- layer model ---------------- */
+const MAX_LAYERS = 6;
+let layerIdCounter = 0;
+const ALGO_LABELS = {
+  'floyd-steinberg':'Floyd–Steinberg', 'atkinson':'Atkinson', 'burkes':'Burkes', 'sierra3':'Sierra 3-row',
+  'sierra2':'Sierra 2-row', 'sierra-lite':'Sierra Lite', 'stucki':'Stucki', 'jjn':'JJN',
+  'bayer2':'Bayer 2×2', 'bayer4':'Bayer 4×4', 'bayer8':'Bayer 8×8',
+  'random':'Random', 'halftone':'Halftone', 'threshold':'Threshold'
+};
+const DIFFUSION_ALGOS = { 'floyd-steinberg':1,'atkinson':1,'burkes':1,'sierra3':1,'sierra2':1,'sierra-lite':1,'stucki':1,'jjn':1 };
+const BLEND_MODES = ['normal','multiply','screen','overlay','darken','lighten','difference','exclusion','add'];
+
+function makeDefaultLayer(name){
+  layerIdCounter++;
+  return {
+    id: layerIdCounter, name: name || ('Layer '+layerIdCounter),
+    enabled: true, expanded: true,
+    algo: 'floyd-steinberg', threshold: 128, gain: 1.0, weight: 1.0, levels: 2,
+    invert: false, serpentine: true,
+    colorMode: 'mono',
+    monoBg: hexToRgb('#0e120f'), monoFg: hexToRgb('#ede7da'),
+    duoA: hexToRgb('#14110d'), duoB: hexToRgb('#5fa889'),
+    paletteName: 'gameboy', customSwatchColors: [[20,17,13],[95,168,137],[237,231,218]],
+    circuitBend: 0, circuitAnimate: false, _animPhase: 0,
+    offsetX: 0, offsetY: 0,
+    blendMode: 'normal', opacity: 1
+  };
+}
+function resolvePalette(L){
+  if(L.paletteName==='custom') return L.customSwatchColors.length? L.customSwatchColors : [[0,0,0],[255,255,255]];
+  return PALETTES[L.paletteName] || PALETTES.gameboy;
+}
+function layerToMessage(L){
+  return {
+    enabled: L.enabled, algo: L.algo, threshold: L.threshold, gain: L.gain, weight: L.weight, levels: L.levels,
+    invert: L.invert, serpentine: L.serpentine, colorMode: L.colorMode,
+    fg: L.monoFg, bg: L.monoBg, colorA: L.duoA, colorB: L.duoB,
+    palette: L.colorMode==='palette' ? resolvePalette(L) : null,
+    circuitBend: (L.circuitBend/100) + (L.circuitAnimate ? L._animPhase : 0),
+    offsetX: L.offsetX, offsetY: L.offsetY,
+    blendMode: L.blendMode, opacity: L.opacity
+  };
+}
+
+/* ---------------- state ---------------- */
+const state = {
+  sourceMode: 'test',
+  layers: [ makeDefaultLayer('Base') ],
+  ar: 'fill', arW:5, arH:4,
+  pixelScale: 4, adaptiveRes: true,
+  playing: true,
+  uiHidden: false,
+  noiseSeed: 1337
+};
+
+/* ---------------- DOM refs ---------------- */
+const $ = id => document.getElementById(id);
+const dispCanvas = $('dispCanvas'), dispCtx = dispCanvas.getContext('2d');
+const procCanvas = $('procCanvas'), procCtx = procCanvas.getContext('2d', {willReadFrequently:true});
+const resultCanvas = $('resultCanvas'), resultCtx = resultCanvas.getContext('2d');
+const videoEl = $('videoEl'), imgEl = $('imgEl');
+const gifCanvas = $('gifCanvas'), gifCtx = gifCanvas.getContext('2d');
+const patchCanvas = $('patchCanvas'), patchCtx = patchCanvas.getContext('2d');
+const histCanvas = $('histCanvas'), histCtx = histCanvas.getContext('2d');
+const frameEl = $('frame'), viewportEl = $('viewport');
+
+/* ---------------- worker ---------------- */
+const workerSrc = document.getElementById('worker-src').textContent;
+const workerBlob = new Blob([workerSrc], {type:'application/javascript'});
+const workerURL = URL.createObjectURL(workerBlob);
+const ditherWorker = new Worker(workerURL);
+let workerBusy = false;
+let frameCounter = 0;
+
+/* ---------------- toast ---------------- */
+let toastTimer=null;
+function toast(msg){
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.classList.remove('show'), 1800);
+}
+
+/* ================= SOURCE MANAGEMENT ================= */
+let webcamStream = null;
+let videoObjectURL = null;
+let gifFrames = [], gifIndex = 0, gifFrameStart = 0, gifLogicalW=0, gifLogicalH=0;
+let hasImage=false, hasGif=false, hasVideo=false, hasWebcam=false;
+
+function teardownWebcam(){
+  if(webcamStream){
+    webcamStream.getTracks().forEach(t=>t.stop());
+    webcamStream=null;
+  }
+  hasWebcam=false;
+}
+function teardownVideoFile(){
+  if(videoObjectURL){ URL.revokeObjectURL(videoObjectURL); videoObjectURL=null; }
+  hasVideo=false;
+}
+function teardownAllSources(exceptMode){
+  if(exceptMode!=='webcam') teardownWebcam();
+  if(exceptMode!=='video') teardownVideoFile();
+  if(exceptMode!=='webcam' && exceptMode!=='video'){
+    try{ videoEl.pause(); }catch(e){}
+    videoEl.srcObject=null; videoEl.src='';
+  }
+}
+
+async function startWebcam(deviceId){
+  teardownAllSources('webcam');
+  try{
+    const constraints = { video: deviceId? {deviceId:{exact:deviceId}} : {facingMode:'user'}, audio:false };
+    webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = webcamStream;
+    await videoEl.play();
+    hasWebcam = true;
+    $('camStatus').textContent = 'live · '+(videoEl.videoWidth||'—')+'×'+(videoEl.videoHeight||'—');
+    $('liveDot').classList.add('live');
+    await populateCameraList();
+  }catch(err){
+    $('camStatus').textContent = 'error: '+err.message;
+    toast('Camera access denied or unavailable');
+  }
+}
+async function populateCameraList(){
+  try{
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d=>d.kind==='videoinput');
+    const sel = $('camSelect');
+    sel.innerHTML='';
+    cams.forEach((c,i)=>{
+      const o = document.createElement('option');
+      o.value=c.deviceId; o.textContent = c.label || ('Camera '+(i+1));
+      sel.appendChild(o);
+    });
+  }catch(e){}
+}
+
+function loadImageFile(file){
+  teardownAllSources('image');
+  const url = URL.createObjectURL(file);
+  imgEl.onload = ()=>{
+    hasImage=true;
+    $('imageStatus').textContent = file.name+' · '+imgEl.naturalWidth+'×'+imgEl.naturalHeight;
+    URL.revokeObjectURL(url);
+  };
+  imgEl.src = url;
+}
+
+async function loadGifFile(file){
+  teardownAllSources('gif');
+  hasGif=false;
+  $('gifStatus').textContent = 'decoding…';
+  try{
+    const buf = await file.arrayBuffer();
+    const gif = parseGIF(buf);
+    gifFrames = gif.frames;
+    gifLogicalW = gif.lsd.width; gifLogicalH = gif.lsd.height;
+    gifCanvas.width = gifLogicalW; gifCanvas.height = gifLogicalH;
+    gifCtx.clearRect(0,0,gifLogicalW,gifLogicalH);
+    gifIndex = 0; gifFrameStart = performance.now(); gifPrevRect = null;
+    hasGif = true;
+    $('gifStatus').textContent = file.name+' · '+gifLogicalW+'×'+gifLogicalH+' · '+gifFrames.length+' frames';
+  }catch(err){
+    $('gifStatus').textContent = 'error decoding gif';
+    toast('Could not decode GIF');
+  }
+}
+let gifPrevRect = null;
+function advanceGif(now){
+  if(!gifFrames.length) return;
+  let f = gifFrames[gifIndex];
+  if(now - gifFrameStart >= Math.max(20, f.delay||100)){
+    if(f.disposalType===2 && gifPrevRect){
+      gifCtx.clearRect(gifPrevRect.left, gifPrevRect.top, gifPrevRect.width, gifPrevRect.height);
+    }
+    gifIndex = (gifIndex+1) % gifFrames.length;
+    gifFrameStart = now;
+    f = gifFrames[gifIndex];
+  }
+  const cur = gifFrames[gifIndex];
+  if(cur && cur !== gifFrames._lastDrawn){
+    patchCanvas.width = cur.dims.width; patchCanvas.height = cur.dims.height;
+    const imgData = new ImageData(new Uint8ClampedArray(cur.patch), cur.dims.width, cur.dims.height);
+    patchCtx.putImageData(imgData,0,0);
+    gifCtx.drawImage(patchCanvas, cur.dims.left, cur.dims.top);
+    gifPrevRect = { left:cur.dims.left, top:cur.dims.top, width:cur.dims.width, height:cur.dims.height };
+    gifFrames._lastDrawn = cur;
+  }
+}
+
+function loadVideoFile(file){
+  teardownAllSources('video');
+  videoObjectURL = URL.createObjectURL(file);
+  videoEl.srcObject = null;
+  videoEl.loop = true;
+  videoEl.src = videoObjectURL;
+  videoEl.muted = true;
+  videoEl.play().catch(()=>{});
+  hasVideo = true;
+  videoEl.onloadedmetadata = ()=>{
+    $('videoStatus').textContent = file.name+' · '+videoEl.videoWidth+'×'+videoEl.videoHeight;
+  };
+}
+
+function switchSourceMode(mode){
+  state.sourceMode = mode;
+  document.querySelectorAll('.tab[data-src]').forEach(t=>t.classList.toggle('active', t.dataset.src===mode));
+  document.querySelectorAll('.src-panel').forEach(p=>p.style.display='none');
+  $('srcPanel-'+mode).style.display='block';
+  $('liveDot').classList.toggle('live', mode==='webcam' && hasWebcam);
+}
+
+/* current active drawable + intrinsic size */
+function getActiveDrawable(){
+  switch(state.sourceMode){
+    case 'webcam': return hasWebcam ? {el:videoEl, w:videoEl.videoWidth, h:videoEl.videoHeight} : null;
+    case 'video':  return hasVideo ? {el:videoEl, w:videoEl.videoWidth, h:videoEl.videoHeight} : null;
+    case 'image':  return hasImage ? {el:imgEl, w:imgEl.naturalWidth, h:imgEl.naturalHeight} : null;
+    case 'gif':    return hasGif ? {el:gifCanvas, w:gifLogicalW, h:gifLogicalH} : null;
+    default: return null;
+  }
+}
+
+/* procedural test pattern fallback */
+let testT = 0;
+function drawTestPattern(ctx, w, h){
+  testT += 0.012;
+  const grad = ctx.createLinearGradient(0,0,w,h);
+  const hue = (testT*40)%360;
+  grad.addColorStop(0, `hsl(${hue},45%,18%)`);
+  grad.addColorStop(0.5+0.3*Math.sin(testT), `hsl(${(hue+80)%360},55%,55%)`);
+  grad.addColorStop(1, `hsl(${(hue+160)%360},40%,12%)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,w,h);
+  const cx = w*(0.5+0.25*Math.sin(testT*0.7)), cy = h*(0.5+0.25*Math.cos(testT*0.5));
+  const r = Math.min(w,h)*(0.28+0.06*Math.sin(testT*1.3));
+  const rg = ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+  rg.addColorStop(0,'rgba(255,255,255,0.9)');
+  rg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle = rg;
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+}
+
+/* ================= ASPECT RATIO / SIZING ================= */
+function currentAspect(){
+  if(state.ar==='custom') return state.arW/state.arH;
+  if(state.ar!=='fill'){
+    const [a,b] = state.ar.split(':').map(Number);
+    return a/b;
+  }
+  // fill mode: aspect tracks the frame's actual on-screen box (single source of truth)
+  const w = frameEl.clientWidth, h = frameEl.clientHeight;
+  return (w>0 && h>0) ? w/h : 4/3;
+}
+function layoutFrame(){
+  const r = viewportEl.getBoundingClientRect();
+  const maxW = r.width - 40, maxH = r.height - 40;
+  let w, h;
+  if(state.ar==='fill'){
+    w = maxW; h = maxH;
+  } else {
+    const aspect = currentAspect();
+    w = maxW; h = w/aspect;
+    if(h>maxH){ h=maxH; w=h*aspect; }
+  }
+  frameEl.style.width = Math.round(w)+'px';
+  frameEl.style.height = Math.round(h)+'px';
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  dispCanvas.width = Math.round(w*dpr);
+  dispCanvas.height = Math.round(h*dpr);
+  buildSprockets();
+  redrawDisplayFromLast();
+}
+function buildSprockets(){
+  const holes = $('sprockets');
+  const count = Math.max(4, Math.round(frameEl.clientHeight/26));
+  holes.innerHTML='';
+  for(let i=0;i<count;i++){ const d=document.createElement('div'); holes.appendChild(d); }
+}
+
+function computeCoverRect(sw,sh,dw,dh){
+  const srcA = sw/sh, dstA = dw/dh;
+  let sx,sy,sww,shh;
+  if(srcA>dstA){ shh=sh; sww=sh*dstA; sx=(sw-sww)/2; sy=0; }
+  else { sww=sw; shh=sw/dstA; sx=0; sy=(sh-shh)/2; }
+  return {sx,sy,sw:sww,sh:shh};
+}
+
+/* proc resolution */
+const BASE_LONG_EDGE = 640;
+function procDims(){
+  const aspect = currentAspect();
+  let w,h;
+  if(aspect>=1){ w = Math.round(BASE_LONG_EDGE/state.pixelScale); h = Math.round(w/aspect); }
+  else { h = Math.round(BASE_LONG_EDGE/state.pixelScale); w = Math.round(h*aspect); }
+  return { w:Math.max(8,w), h:Math.max(8,h) };
+}
+
+/* ================= MAIN LOOP ================= */
+let lastResultBitmap = null; // {canvas} small result canvas snapshot for redraw-on-resize
+let fpsSmooth = 0, msSmooth = 0, lastTickTime = performance.now();
+let adaptiveTimer = 0;
+
+function tick(now){
+  requestAnimationFrame(tick);
+  if(!state.playing) return;
+
+  if(state.sourceMode==='gif') advanceGif(now);
+
+  const dt = now-lastTickTime; lastTickTime = now;
+  const instFps = 1000/Math.max(dt,1);
+  fpsSmooth = fpsSmooth? fpsSmooth+(instFps-fpsSmooth)*0.08 : instFps;
+
+  for(const L of state.layers){ if(L.circuitAnimate) L._animPhase = (L._animPhase + 0.0035) % 1; }
+
+  if(workerBusy) return; // drop frame — never queue
+
+  const {w:pw, h:ph} = procDims();
+  if(procCanvas.width!==pw||procCanvas.height!==ph){ procCanvas.width=pw; procCanvas.height=ph; }
+
+  const drawable = getActiveDrawable();
+  procCtx.imageSmoothingEnabled = true;
+  if(drawable && drawable.w>0 && drawable.h>0){
+    const rect = computeCoverRect(drawable.w, drawable.h, pw, ph);
+    procCtx.drawImage(drawable.el, rect.sx, rect.sy, rect.sw, rect.sh, 0,0,pw,ph);
+  } else {
+    drawTestPattern(procCtx, pw, ph);
+  }
+
+  let imgData;
+  try{ imgData = procCtx.getImageData(0,0,pw,ph); }
+  catch(e){ return; }
+
+  const msg = {
+    type:'process', buffer: imgData.data.buffer, width:pw, height:ph,
+    noiseSeed: state.noiseSeed + frameCounter,
+    frame: frameCounter++,
+    layers: state.layers.map(layerToMessage)
+  };
+  workerBusy = true;
+  ditherWorker.postMessage(msg, [msg.buffer]);
+}
+requestAnimationFrame(tick);
+
+ditherWorker.onmessage = function(e){
+  const { buffer, width, height, histogram, procMs } = e.data;
+  workerBusy = false;
+
+  if(resultCanvas.width!==width||resultCanvas.height!==height){ resultCanvas.width=width; resultCanvas.height=height; }
+  const outImgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
+  resultCtx.putImageData(outImgData,0,0);
+  lastResultBitmap = resultCanvas;
+
+  paintDisplay();
+  drawHistogram(histogram);
+  updateHud(procMs);
+  adaptResolution(procMs);
+};
+
+function paintDisplay(){
+  if(!lastResultBitmap) return;
+  dispCtx.imageSmoothingEnabled = false;
+  dispCtx.clearRect(0,0,dispCanvas.width,dispCanvas.height);
+  dispCtx.drawImage(lastResultBitmap, 0,0, dispCanvas.width, dispCanvas.height);
+}
+function redrawDisplayFromLast(){ paintDisplay(); }
+
+function drawHistogram(hist){
+  const w=histCanvas.width, h=histCanvas.height;
+  histCtx.clearRect(0,0,w,h);
+  let max=1; for(let i=0;i<hist.length;i++) max=Math.max(max,hist[i]);
+  const bw = w/hist.length;
+  histCtx.fillStyle = 'rgba(95,168,137,0.85)';
+  for(let i=0;i<hist.length;i++){
+    const bh = (hist[i]/max)*h;
+    histCtx.fillRect(i*bw, h-bh, Math.max(1,bw-1), bh);
+  }
+}
+
+function updateHud(procMs){
+  $('fpsVal').textContent = Math.round(fpsSmooth);
+  msSmooth = msSmooth? msSmooth+(procMs-msSmooth)*0.15 : procMs;
+  $('msVal').textContent = msSmooth.toFixed(1);
+  const {w,h} = procDims();
+  $('resVal').textContent = w+' × '+h+'  (proc)';
+}
+
+/* adaptive resolution: nudge pixelScale toward a target frame budget */
+function adaptResolution(procMs){
+  if(!state.adaptiveRes) return;
+  adaptiveTimer++;
+  if(adaptiveTimer%12!==0) return;
+  const target = 28; // ms budget ~ 35fps processing
+  if(procMs>target*1.35 && state.pixelScale<20){
+    state.pixelScale = Math.min(20, state.pixelScale+1);
+    syncSlider('pixelScale', state.pixelScale, v=>v+'×');
+  } else if(procMs<target*0.5 && state.pixelScale>1){
+    state.pixelScale = Math.max(1, state.pixelScale-1);
+    syncSlider('pixelScale', state.pixelScale, v=>v+'×');
+  }
+}
+function syncSlider(id, val, fmt){
+  $(id).value = val;
+  $(id+'Val').textContent = fmt? fmt(val) : val;
+}
+
+/* ================= UI WIRING ================= */
+function bindRange(id, key, transform, display){
+  const el = $(id);
+  el.addEventListener('input', ()=>{
+    const raw = Number(el.value);
+    state[key] = transform ? transform(raw) : raw;
+    $(id+'Val').textContent = display ? display(state[key], raw) : state[key];
+  });
+}
+bindRange('pixelScale','pixelScale', v=>v, v=>v+'×');
+$('adaptiveRes').addEventListener('change', e=>state.adaptiveRes=e.target.checked);
+
+/* ---------------- layer cards ---------------- */
+const layersList = $('layersList');
+
+function algoOptionsHTML(L){
+  const groups = [
+    ['Error diffusion', ['floyd-steinberg','atkinson','burkes','sierra3','sierra2','sierra-lite','stucki','jjn']],
+    ['Ordered', ['bayer2','bayer4','bayer8']],
+    ['Stochastic', ['random']],
+    ['Screen', ['halftone']],
+    ['Flat', ['threshold']]
+  ];
+  return groups.map(([label,vals])=>
+    `<optgroup label="${label}">${vals.map(v=>`<option value="${v}" ${L.algo===v?'selected':''}>${ALGO_LABELS[v]}</option>`).join('')}</optgroup>`
+  ).join('');
+}
+function colorTabsHTML(L){
+  const modes = [['mono','Mono'],['duotone','Duo'],['fullcolor','Full'],['palette','Palette'],['circuit','Circuit']];
+  return `<div class="tabs">${modes.map(([m,label])=>
+    `<div class="tab ${L.colorMode===m?'active':''}" data-act="colorTab" data-mode="${m}">${label}</div>`).join('')}</div>`;
+}
+function colorPanelHTML(L){
+  if(L.colorMode==='duotone'){
+    return `<div class="row" style="margin-top:10px;">
+      <div><div class="colorpick"><input type="color" data-field="duoA" value="${rgbToHex(L.duoA)}"></div><div class="colorlabel">Color A</div></div>
+      <div><div class="colorpick"><input type="color" data-field="duoB" value="${rgbToHex(L.duoB)}"></div><div class="colorlabel">Color B</div></div>
+    </div>`;
+  }
+  if(L.colorMode==='fullcolor'){
+    return `<div class="hint" style="margin-top:10px;">Each RGB channel dithered independently across the selected level count.</div>`;
+  }
+  if(L.colorMode==='circuit'){
+    return `<div style="margin-top:10px;">
+      <div class="field"><label>Bend <span class="val">${L.circuitBend}</span></label>
+        <input type="range" data-field="circuitBend" min="0" max="100" step="1" value="${L.circuitBend}"></div>
+      <label class="check"><input type="checkbox" data-field="circuitAnimate" ${L.circuitAnimate?'checked':''}><span class="box"></span> Animate (slow drift)</label>
+    </div>`;
+  }
+  if(L.colorMode==='palette'){
+    const list = L.paletteName==='custom' ? L.customSwatchColors : (PALETTES[L.paletteName]||[]);
+    const swatches = list.map((c,idx)=>
+      `<div class="swatch-mini ${L.paletteName==='custom'?'rm':''}" ${L.paletteName==='custom'?`data-act="removeSwatch" data-idx="${idx}" title="Click to remove"`:''} style="background:${rgbToHex(c)}"></div>`
+    ).join('');
+    return `<div style="margin-top:10px;">
+      <div class="field"><select data-field="paletteName">
+        <option value="gameboy" ${L.paletteName==='gameboy'?'selected':''}>Game Boy (4-tone)</option>
+        <option value="cga" ${L.paletteName==='cga'?'selected':''}>CGA (16)</option>
+        <option value="print" ${L.paletteName==='print'?'selected':''}>Newsprint duo</option>
+        <option value="sepia" ${L.paletteName==='sepia'?'selected':''}>Sepia darkroom</option>
+        <option value="custom" ${L.paletteName==='custom'?'selected':''}>Custom…</option>
+      </select></div>
+      <div class="swatchrow">${swatches}</div>
+      <div class="row" style="margin-top:8px; ${L.paletteName==='custom'?'':'display:none;'}">
+        <div class="colorpick" style="width:26px;height:26px;"><input type="color" data-field="_newSwatch" value="#5fa889"></div>
+        <button class="btn" data-act="addSwatch" style="flex:1;">Add swatch</button>
+      </div>
+    </div>`;
+  }
+  // mono (default)
+  return `<div class="row" style="margin-top:10px;">
+    <div><div class="colorpick"><input type="color" data-field="monoBg" value="${rgbToHex(L.monoBg)}"></div><div class="colorlabel">Shadow</div></div>
+    <div><div class="colorpick"><input type="color" data-field="monoFg" value="${rgbToHex(L.monoFg)}"></div><div class="colorlabel">Highlight</div></div>
+  </div>`;
+}
+function layerCardHTML(L, i){
+  const collapsed = !L.expanded;
+  const showSerp = !!DIFFUSION_ALGOS[L.algo];
+  return `
+  <div class="layer-card ${collapsed?'collapsed':''} ${L.enabled?'':'disabled'}" data-li="${i}">
+    <div class="layer-head" data-act="toggleExpand">
+      <svg class="layer-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      <span class="layer-name">${L.name}</span>
+      <span class="layer-tag">${ALGO_LABELS[L.algo]||L.algo}</span>
+      <button class="layer-mini-btn ${L.enabled?'on':''}" data-act="toggleEnabled" title="Enable / disable">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button class="layer-mini-btn" data-act="moveUp" title="Move up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+      <button class="layer-mini-btn" data-act="moveDown" title="Move down">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      </button>
+      <button class="layer-mini-btn" data-act="duplicate" title="Duplicate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M4 14V4a1 1 0 0 1 1-1h10"/></svg>
+      </button>
+      <button class="layer-mini-btn" data-act="delete" title="Delete">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M8 7l1 13a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l1-13"/></svg>
+      </button>
+    </div>
+    <div class="layer-body">
+      <div class="field"><select data-field="algo">${algoOptionsHTML(L)}</select></div>
+      <label class="check" style="display:${showSerp?'flex':'none'}; margin-bottom:10px;">
+        <input type="checkbox" data-field="serpentine" ${L.serpentine?'checked':''}><span class="box"></span> Serpentine scan
+      </label>
+      <div class="field"><label>Threshold <span class="val">${L.threshold}</span></label>
+        <input type="range" data-field="threshold" min="0" max="255" step="1" value="${L.threshold}"></div>
+      <div class="field"><label>Gain <span class="val">${L.gain.toFixed(2)}</span></label>
+        <input type="range" data-field="gain" min="10" max="300" step="1" value="${Math.round(L.gain*100)}"></div>
+      <div class="field"><label>Weight <span class="val">${L.weight.toFixed(2)}</span></label>
+        <input type="range" data-field="weight" min="0" max="200" step="1" value="${Math.round(L.weight*100)}"></div>
+      <div class="field"><label>Levels <span class="val">${L.levels}</span></label>
+        <input type="range" data-field="levels" min="2" max="8" step="1" value="${L.levels}"></div>
+      <label class="check" style="margin-bottom:12px;">
+        <input type="checkbox" data-field="invert" ${L.invert?'checked':''}><span class="box"></span> Invert
+      </label>
+
+      ${colorTabsHTML(L)}
+      ${colorPanelHTML(L)}
+
+      <div class="layer-divider"></div>
+      <div class="field">
+        <label style="margin-bottom:7px;">Blend mode</label>
+        <select data-field="blendMode">${BLEND_MODES.map(m=>
+          `<option value="${m}" ${L.blendMode===m?'selected':''}>${m.charAt(0).toUpperCase()+m.slice(1)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Opacity <span class="val">${Math.round(L.opacity*100)}%</span></label>
+        <input type="range" data-field="opacity" min="0" max="100" step="1" value="${Math.round(L.opacity*100)}"></div>
+      <div class="subgrid2">
+        <div class="field"><label>Offset X <span class="val">${L.offsetX}</span></label>
+          <input type="range" data-field="offsetX" min="-20" max="20" step="1" value="${L.offsetX}"></div>
+        <div class="field"><label>Offset Y <span class="val">${L.offsetY}</span></label>
+          <input type="range" data-field="offsetY" min="-20" max="20" step="1" value="${L.offsetY}"></div>
+      </div>
+    </div>
+  </div>`;
+}
+function renderLayersUI(){
+  layersList.innerHTML = state.layers.map((L,i)=>layerCardHTML(L,i)).join('');
+  $('layerCountHint').textContent = state.layers.length+' / '+MAX_LAYERS+' layers';
+  $('btnAddLayer').disabled = state.layers.length>=MAX_LAYERS;
+}
+renderLayersUI();
+
+$('btnAddLayer').addEventListener('click', ()=>{
+  if(state.layers.length>=MAX_LAYERS){ toast('Maximum '+MAX_LAYERS+' layers'); return; }
+  state.layers.push(makeDefaultLayer());
+  renderLayersUI();
+});
+
+layersList.addEventListener('click', e=>{
+  const card = e.target.closest('.layer-card');
+  if(!card) return;
+  const i = Number(card.dataset.li);
+  const L = state.layers[i];
+  if(!L) return;
+
+  if(e.target.closest('.layer-head') && !e.target.closest('button')){
+    L.expanded = !L.expanded;
+    renderLayersUI();
+    return;
+  }
+  const actEl = e.target.closest('[data-act]');
+  if(!actEl) return;
+  const act = actEl.dataset.act;
+  if(act==='toggleEnabled'){ L.enabled=!L.enabled; renderLayersUI(); }
+  else if(act==='moveUp'){ if(i>0){ const tmp=state.layers[i-1]; state.layers[i-1]=state.layers[i]; state.layers[i]=tmp; renderLayersUI(); } }
+  else if(act==='moveDown'){ if(i<state.layers.length-1){ const tmp=state.layers[i+1]; state.layers[i+1]=state.layers[i]; state.layers[i]=tmp; renderLayersUI(); } }
+  else if(act==='duplicate'){
+    if(state.layers.length>=MAX_LAYERS){ toast('Maximum '+MAX_LAYERS+' layers'); return; }
+    const copy = JSON.parse(JSON.stringify(L));
+    layerIdCounter++; copy.id=layerIdCounter; copy.name=L.name+' copy';
+    state.layers.splice(i+1,0,copy);
+    renderLayersUI();
+  }
+  else if(act==='delete'){
+    if(state.layers.length<=1){ toast('At least one layer is required'); return; }
+    state.layers.splice(i,1);
+    renderLayersUI();
+  }
+  else if(act==='colorTab'){ L.colorMode = actEl.dataset.mode; renderLayersUI(); }
+  else if(act==='addSwatch'){
+    const inp = card.querySelector('[data-field="_newSwatch"]');
+    L.customSwatchColors.push(hexToRgb(inp.value));
+    renderLayersUI();
+  }
+  else if(act==='removeSwatch'){
+    L.customSwatchColors.splice(Number(actEl.dataset.idx),1);
+    renderLayersUI();
+  }
+});
+
+layersList.addEventListener('input', e=>{
+  const card = e.target.closest('.layer-card');
+  if(!card) return;
+  const L = state.layers[Number(card.dataset.li)];
+  if(!L) return;
+  const field = e.target.dataset.field;
+  if(!field || field==='_newSwatch') return;
+  if(e.target.type==='range'){
+    let v = Number(e.target.value);
+    if(field==='gain' || field==='weight') v = v/100;
+    if(field==='opacity') v = v/100;
+    L[field] = v;
+    const label = e.target.closest('.field') && e.target.closest('.field').querySelector('.val');
+    if(label){
+      if(field==='opacity') label.textContent = Math.round(v*100)+'%';
+      else if(field==='gain'||field==='weight') label.textContent = v.toFixed(2);
+      else label.textContent = v;
+    }
+  } else if(e.target.type==='color'){
+    L[field] = hexToRgb(e.target.value);
+  }
+});
+
+layersList.addEventListener('change', e=>{
+  const card = e.target.closest('.layer-card');
+  if(!card) return;
+  const L = state.layers[Number(card.dataset.li)];
+  if(!L) return;
+  const field = e.target.dataset.field;
+  if(!field) return;
+  if(e.target.type==='checkbox'){ L[field]=e.target.checked; }
+  else if(e.target.tagName==='SELECT'){
+    L[field]=e.target.value;
+    if(field==='algo' || field==='paletteName') renderLayersUI();
+  }
+});
+
+/* source tabs */
+document.querySelectorAll('.tab[data-src]').forEach(tab=>{
+  tab.addEventListener('click', ()=>switchSourceMode(tab.dataset.src));
+});
+$('btnCamStart').addEventListener('click', ()=>startWebcam($('camSelect').value));
+$('camSelect').addEventListener('change', ()=>{ if(hasWebcam) startWebcam($('camSelect').value); });
+
+function wireDropzone(zoneId, inputId, onFile){
+  const zone = $(zoneId), input = $(inputId);
+  zone.addEventListener('click', ()=>input.click());
+  input.addEventListener('change', ()=>{ if(input.files[0]) onFile(input.files[0]); });
+  zone.addEventListener('dragover', e=>{ e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', ()=>zone.classList.remove('over'));
+  zone.addEventListener('drop', e=>{
+    e.preventDefault(); zone.classList.remove('over');
+    if(e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+  });
+}
+wireDropzone('dropImage','fileImage', f=>loadImageFile(f));
+wireDropzone('dropGif','fileGif', f=>loadGifFile(f));
+wireDropzone('dropVideo','fileVideo', f=>loadVideoFile(f));
+$('btnVidPlay').addEventListener('click', ()=>{
+  if(videoEl.paused) videoEl.play(); else videoEl.pause();
+});
+
+/* aspect ratio */
+document.querySelectorAll('.ar-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.ar-btn').forEach(b=>b.classList.toggle('active', b===btn));
+    state.ar = btn.dataset.ar;
+    $('customArRow').style.display = state.ar==='custom' ? 'flex' : 'none';
+    layoutFrame();
+  });
+});
+$('arW').addEventListener('input', e=>{ state.arW=Number(e.target.value)||1; layoutFrame(); });
+$('arH').addEventListener('input', e=>{ state.arH=Number(e.target.value)||1; layoutFrame(); });
+
+/* drawer + topbar controls */
+$('btnDrawer').addEventListener('click', ()=>$('drawer').classList.toggle('collapsed'));
+$('btnDrawerClose').addEventListener('click', ()=>$('drawer').classList.add('collapsed'));
+$('btnPlay').addEventListener('click', togglePlay);
+function togglePlay(){
+  state.playing = !state.playing;
+  $('playIcon').innerHTML = state.playing
+    ? '<path d="M8 5v14l11-7z"/>'
+    : '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>';
+}
+$('btnHideUI').addEventListener('click', toggleUI);
+function toggleUI(){
+  state.uiHidden = !state.uiHidden;
+  $('topbar').classList.toggle('hidden', state.uiHidden);
+  $('hud-readout').classList.toggle('hidden', state.uiHidden);
+  $('btnHideUI').classList.toggle('active', state.uiHidden);
+  if(state.uiHidden) $('drawer').classList.add('collapsed');
+}
+$('btnFullscreen').addEventListener('click', toggleFullscreen);
+function toggleFullscreen(){
+  if(!document.fullscreenElement){ $('app').requestFullscreen().catch(()=>{}); }
+  else document.exitFullscreen();
+}
+document.addEventListener('fullscreenchange', ()=>{
+  $('btnFullscreen').classList.toggle('active', !!document.fullscreenElement);
+  requestAnimationFrame(layoutFrame);
+});
+
+$('btnSnap').addEventListener('click', downloadSnapshot);
+$('btnDownload').addEventListener('click', downloadSnapshot);
+function downloadSnapshot(){
+  if(!lastResultBitmap){ toast('Nothing to save yet'); return; }
+  const link = document.createElement('a');
+  link.download = 'halftone-'+Date.now()+'.png';
+  link.href = dispCanvas.toDataURL('image/png');
+  link.click();
+  toast('Frame saved');
+}
+
+$('btnReset').addEventListener('click', resetDefaults);
+function resetDefaults(){
+  state.pixelScale=4; state.adaptiveRes=true;
+  syncSlider('pixelScale',4,v=>v+'×');
+  $('adaptiveRes').checked=true;
+  layerIdCounter = 0;
+  state.layers = [ makeDefaultLayer('Base') ];
+  renderLayersUI();
+  toast('Parameters reset');
+}
+
+/* keyboard shortcuts */
+window.addEventListener('keydown', e=>{
+  if(e.target.tagName==='INPUT' || e.target.tagName==='SELECT') return;
+  if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
+  else if(e.key==='f'||e.key==='F'){ toggleFullscreen(); }
+  else if(e.key==='s'||e.key==='S'){ downloadSnapshot(); }
+  else if(e.key==='h'||e.key==='H'){ toggleUI(); }
+  else if(e.key==='c'||e.key==='C'){ $('drawer').classList.toggle('collapsed'); }
+});
+
+/* auto-hide UI on fullscreen inactivity */
+let hideTimer=null;
+document.addEventListener('mousemove', ()=>{
+  if(document.fullscreenElement){
+    $('topbar').classList.remove('hidden');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(()=>{ if(document.fullscreenElement) $('topbar').classList.add('hidden'); }, 2600);
+  }
+});
+
+/* resize */
+const ro = new ResizeObserver(()=>layoutFrame());
+ro.observe(viewportEl);
+window.addEventListener('resize', layoutFrame);
+layoutFrame();
+
+/* attempt initial camera device enumeration for labels (non-blocking, no permission prompt without gesture) */
+populateCameraList();
+
+})();
+</script>
 </body>
 </html>
