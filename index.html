@@ -365,7 +365,7 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
 
         <div id="srcPanel-gif" class="src-panel" style="display:none;">
           <div class="dropzone" id="dropGif">Drop .gif or click to upload</div>
-          <input type="file" id="fileGif" accept="image/gif" style="display:none;">
+          <input type="file" id="fileGif" accept="image/gif,.gif" style="display:none;">
           <div class="status-line" id="gifStatus"></div>
         </div>
 
@@ -1114,11 +1114,21 @@ function parseGIF(arrayBuffer){
       const transparentFlag = gce ? gce.transparentFlag : false;
       const transparentIndex = gce ? gce.transparentIndex : -1;
       const patch = new Uint8ClampedArray(w*h*4);
+      const ctLen = colorTable ? colorTable.length : 0;
       for(let i=0;i<w*h;i++){
         const idx = indices[i];
         const o=i*4;
         if(transparentFlag && idx===transparentIndex){ patch[o+3]=0; }
-        else { const c = idx*3; patch[o]=colorTable[c]; patch[o+1]=colorTable[c+1]; patch[o+2]=colorTable[c+2]; patch[o+3]=255; }
+        else {
+          const c = idx*3;
+          if(ctLen && c+2<ctLen){
+            patch[o]=colorTable[c]; patch[o+1]=colorTable[c+1]; patch[o+2]=colorTable[c+2]; patch[o+3]=255;
+          } else {
+            // malformed/missing color table entry — flag visibly rather than throwing and
+            // aborting the whole decode over one bad pixel.
+            patch[o]=255; patch[o+1]=0; patch[o+2]=255; patch[o+3]=255;
+          }
+        }
       }
 
       frames.push({
@@ -1381,38 +1391,64 @@ async function loadGifFile(file){
   try{
     const buf = await file.arrayBuffer();
     const gif = parseGIF(buf);
+    if(!gif.frames.length) throw new Error('no image frames found in file');
     gifFrames = gif.frames;
+    gifFrames._lastDrawn = null;
     gifLogicalW = gif.lsd.width; gifLogicalH = gif.lsd.height;
     gifCanvas.width = gifLogicalW; gifCanvas.height = gifLogicalH;
     gifCtx.clearRect(0,0,gifLogicalW,gifLogicalH);
-    gifIndex = 0; gifFrameStart = performance.now(); gifPrevRect = null;
+    gifIndex = 0; gifFrameStart = performance.now(); gifPrevRect = null; gifPrevSnapshot = null; gifHasDrawnAny = false;
     hasGif = true;
     $('gifStatus').textContent = file.name+' · '+gifLogicalW+'×'+gifLogicalH+' · '+gifFrames.length+' frames';
+    if(state.sourceMode!=='gif') switchSourceMode('gif');
   }catch(err){
-    $('gifStatus').textContent = 'error decoding gif';
-    toast('Could not decode GIF');
+    console.error('GIF decode failed:', err);
+    $('gifStatus').textContent = 'error: '+err.message;
+    toast('Could not decode GIF — '+err.message);
   }
 }
 let gifPrevRect = null;
+let gifPrevSnapshot = null; // {imageData,left,top} snapshot taken before drawing a disposal=3 frame
+let gifHasDrawnAny = false;
+function applyGifDisposal(rect){
+  if(!rect) return;
+  if(rect.disposalType===2){
+    gifCtx.clearRect(rect.left, rect.top, rect.width, rect.height);
+  } else if(rect.disposalType===3 && gifPrevSnapshot){
+    try{ gifCtx.putImageData(gifPrevSnapshot.imageData, gifPrevSnapshot.left, gifPrevSnapshot.top); }
+    catch(e){ /* snapshot out of bounds after a resize — ignore, next frame redraws anyway */ }
+  }
+  // disposal 0/1, or 3 with no prior snapshot (e.g. the very first frame): leave in place.
+}
 function advanceGif(now){
   if(!gifFrames.length) return;
   let f = gifFrames[gifIndex];
   if(now - gifFrameStart >= Math.max(20, f.delay||100)){
-    if(f.disposalType===2 && gifPrevRect){
-      gifCtx.clearRect(gifPrevRect.left, gifPrevRect.top, gifPrevRect.width, gifPrevRect.height);
-    }
+    applyGifDisposal(gifPrevRect);
     gifIndex = (gifIndex+1) % gifFrames.length;
     gifFrameStart = now;
     f = gifFrames[gifIndex];
   }
   const cur = gifFrames[gifIndex];
   if(cur && cur !== gifFrames._lastDrawn){
+    // only meaningful if there's a real prior canvas state to snapshot — not on the first frame ever drawn
+    if(cur.disposalType===3 && gifHasDrawnAny){
+      try{
+        gifPrevSnapshot = {
+          imageData: gifCtx.getImageData(cur.dims.left, cur.dims.top, cur.dims.width, cur.dims.height),
+          left: cur.dims.left, top: cur.dims.top
+        };
+      }catch(e){ gifPrevSnapshot = null; }
+    } else {
+      gifPrevSnapshot = null;
+    }
     patchCanvas.width = cur.dims.width; patchCanvas.height = cur.dims.height;
     const imgData = new ImageData(new Uint8ClampedArray(cur.patch), cur.dims.width, cur.dims.height);
     patchCtx.putImageData(imgData,0,0);
     gifCtx.drawImage(patchCanvas, cur.dims.left, cur.dims.top);
-    gifPrevRect = { left:cur.dims.left, top:cur.dims.top, width:cur.dims.width, height:cur.dims.height };
+    gifPrevRect = { left:cur.dims.left, top:cur.dims.top, width:cur.dims.width, height:cur.dims.height, disposalType:cur.disposalType };
     gifFrames._lastDrawn = cur;
+    gifHasDrawnAny = true;
   }
 }
 
