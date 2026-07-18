@@ -293,6 +293,7 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
 
   <div id="viewport">
     <div id="frame">
+      <img id="imgEl" style="position:absolute; inset:0; width:100%; height:100%; object-fit:contain; pointer-events:none; z-index:-1;" alt="">
       <canvas id="dispCanvas"></canvas>
       <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
       <div id="sprockets"></div>
@@ -343,7 +344,6 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
           <div class="tab active" data-src="test">Test</div>
           <div class="tab" data-src="webcam">Cam</div>
           <div class="tab" data-src="image">Image</div>
-          <div class="tab" data-src="gif">GIF</div>
           <div class="tab" data-src="video">Video</div>
         </div>
 
@@ -358,15 +358,12 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
         </div>
 
         <div id="srcPanel-image" class="src-panel" style="display:none;">
-          <div class="dropzone" id="dropImage">Drop image or click to upload</div>
+          <div class="dropzone" id="dropImage">Drop image or animated GIF, or click to upload</div>
           <input type="file" id="fileImage" accept="image/*" style="display:none;">
+          <div class="row" style="margin-top:8px; display:none;" id="imgPlayRow">
+            <button class="btn" id="btnImgPlay" style="flex:1;">Pause</button>
+          </div>
           <div class="status-line" id="imageStatus"></div>
-        </div>
-
-        <div id="srcPanel-gif" class="src-panel" style="display:none;">
-          <div class="dropzone" id="dropGif">Drop .gif or click to upload</div>
-          <input type="file" id="fileGif" accept="image/gif,.gif" style="display:none;">
-          <div class="status-line" id="gifStatus"></div>
         </div>
 
         <div id="srcPanel-video" class="src-panel" style="display:none;">
@@ -433,11 +430,9 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
 
 <!-- hidden media plumbing -->
 <video id="videoEl" muted playsinline style="display:none;"></video>
-<img id="imgEl" style="display:none;">
-<canvas id="gifCanvas" style="display:none;"></canvas>
-<canvas id="patchCanvas" style="display:none;"></canvas>
 <canvas id="procCanvas" style="display:none;"></canvas>
 <canvas id="resultCanvas" style="display:none;"></canvas>
+<canvas id="imgFreezeCanvas" style="display:none;"></canvas>
 
 <!-- ============================================================
      WORKER SOURCE — inert script tag, blobbed into a real Worker
@@ -1038,173 +1033,6 @@ self.onmessage = function(e){
 </script>
 
 <!-- ============================================================
-     GIF DECODER — self-contained GIF89a/LZW parser (no CDN dependency)
-     ============================================================ -->
-<script>
-"use strict";
-function parseGIF(arrayBuffer){
-  const bytes = new Uint8Array(arrayBuffer);
-  let p = 0;
-  function u8(){ return bytes[p++]; }
-  function u16(){ const v = bytes[p] | (bytes[p+1]<<8); p+=2; return v; }
-
-  const sig = String.fromCharCode(bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5]);
-  if(sig!=="GIF87a" && sig!=="GIF89a") throw new Error("Not a GIF file");
-  p = 6;
-
-  const screenW = u16(), screenH = u16();
-  const packed = u8();
-  const gctFlag = !!(packed & 0x80);
-  const gctSize = gctFlag ? (2 << (packed & 0x07)) : 0;
-  u8(); u8();
-
-  let globalColorTable = null;
-  if(gctFlag){
-    globalColorTable = new Uint8Array(gctSize*3);
-    for(let i=0;i<gctSize*3;i++) globalColorTable[i]=u8();
-  }
-
-  function skipSubBlocks(){ while(true){ const len=u8(); if(!len) break; p+=len; } }
-
-  const frames = [];
-  let gce = null;
-
-  while(p < bytes.length){
-    const blockType = u8();
-    if(blockType === 0x21){
-      const label = u8();
-      if(label === 0xF9){
-        u8();
-        const packedGCE = u8();
-        const delay = u16();
-        const transparentIndex = u8();
-        u8();
-        gce = { disposal:(packedGCE>>2)&0x07, transparentFlag:!!(packedGCE&0x01), transparentIndex, delay: delay*10 };
-      } else if(label === 0x01){
-        const bs = u8(); p += bs; skipSubBlocks();
-      } else {
-        skipSubBlocks();
-      }
-    } else if(blockType === 0x2C){
-      const left=u16(), top=u16(), w=u16(), h=u16();
-      const packedID = u8();
-      const localCTFlag = !!(packedID&0x80);
-      const interlaced = !!(packedID&0x40);
-      const lctSize = localCTFlag ? (2 << (packedID&0x07)) : 0;
-      let colorTable = globalColorTable;
-      if(localCTFlag){
-        colorTable = new Uint8Array(lctSize*3);
-        for(let i=0;i<lctSize*3;i++) colorTable[i]=u8();
-      }
-      const minCodeSize = u8();
-      let dataLen = 0;
-      const chunks = [];
-      while(true){
-        const len = u8();
-        if(!len) break;
-        chunks.push(bytes.subarray(p, p+len));
-        p += len; dataLen += len;
-      }
-      const data = new Uint8Array(dataLen);
-      { let off=0; for(const c of chunks){ data.set(c, off); off+=c.length; } }
-
-      const rawIndices = lzwDecode(data, minCodeSize, w*h);
-      const indices = interlaced ? deinterlaceGif(rawIndices, w, h) : rawIndices;
-
-      const transparentFlag = gce ? gce.transparentFlag : false;
-      const transparentIndex = gce ? gce.transparentIndex : -1;
-      const patch = new Uint8ClampedArray(w*h*4);
-      const ctLen = colorTable ? colorTable.length : 0;
-      for(let i=0;i<w*h;i++){
-        const idx = indices[i];
-        const o=i*4;
-        if(transparentFlag && idx===transparentIndex){ patch[o+3]=0; }
-        else {
-          const c = idx*3;
-          if(ctLen && c+2<ctLen){
-            patch[o]=colorTable[c]; patch[o+1]=colorTable[c+1]; patch[o+2]=colorTable[c+2]; patch[o+3]=255;
-          } else {
-            // malformed/missing color table entry — flag visibly rather than throwing and
-            // aborting the whole decode over one bad pixel.
-            patch[o]=255; patch[o+1]=0; patch[o+2]=255; patch[o+3]=255;
-          }
-        }
-      }
-
-      frames.push({
-        dims: { left, top, width:w, height:h }, patch,
-        delay: gce ? Math.max(gce.delay, 20) : 100,
-        disposalType: gce ? gce.disposal : 0
-      });
-      gce = null;
-    } else if(blockType === 0x3B){
-      break;
-    } else {
-      break;
-    }
-  }
-  return { lsd: { width:screenW, height:screenH }, frames };
-}
-
-function lzwDecode(data, minCodeSize, pixelCount){
-  const clearCode = 1 << minCodeSize;
-  const endCode = clearCode + 1;
-  const output = new Uint8Array(pixelCount);
-  let outPos = 0;
-  let dict, codeSize, nextCode;
-  function resetDict(){
-    dict = new Array(4096);
-    for(let i=0;i<clearCode;i++) dict[i] = [i];
-    dict[clearCode] = null; dict[endCode] = null;
-    codeSize = minCodeSize+1; nextCode = endCode+1;
-  }
-  resetDict();
-  let bitBuf=0, bitCount=0, bytePos=0;
-  function readCode(){
-    while(bitCount < codeSize){
-      if(bytePos >= data.length) return endCode;
-      bitBuf |= data[bytePos++] << bitCount;
-      bitCount += 8;
-    }
-    const code = bitBuf & ((1<<codeSize)-1);
-    bitBuf >>= codeSize; bitCount -= codeSize;
-    return code;
-  }
-  let prev = null;
-  while(outPos < pixelCount){
-    const code = readCode();
-    if(code === clearCode){ resetDict(); prev=null; continue; }
-    if(code === endCode) break;
-    let entry;
-    if(code < nextCode && dict[code]) entry = dict[code];
-    else if(code === nextCode && prev) entry = prev.concat([prev[0]]);
-    else break;
-    for(let i=0;i<entry.length && outPos<pixelCount;i++) output[outPos++]=entry[i];
-    if(prev && nextCode < 4096){
-      dict[nextCode] = prev.concat([entry[0]]);
-      nextCode++;
-      if(nextCode === (1<<codeSize) && codeSize<12) codeSize++;
-    }
-    prev = entry;
-  }
-  return output;
-}
-
-function deinterlaceGif(indices, width, height){
-  const output = new Uint8Array(indices.length);
-  const starts=[0,4,2,1], steps=[8,8,4,2];
-  let srcRow = 0;
-  for(let pass=0; pass<4; pass++){
-    for(let row=starts[pass]; row<height; row+=steps[pass]){
-      for(let col=0; col<width; col++) output[row*width+col] = indices[srcRow*width+col];
-      srcRow++;
-    }
-  }
-  return output;
-}
-</script>
-
-<!-- ============================================================
      MAIN SCRIPT
      ============================================================ -->
 <script>
@@ -1294,8 +1122,7 @@ const dispCanvas = $('dispCanvas'), dispCtx = dispCanvas.getContext('2d');
 const procCanvas = $('procCanvas'), procCtx = procCanvas.getContext('2d', {willReadFrequently:true});
 const resultCanvas = $('resultCanvas'), resultCtx = resultCanvas.getContext('2d');
 const videoEl = $('videoEl'), imgEl = $('imgEl');
-const gifCanvas = $('gifCanvas'), gifCtx = gifCanvas.getContext('2d');
-const patchCanvas = $('patchCanvas'), patchCtx = patchCanvas.getContext('2d');
+const imgFreezeCanvas = $('imgFreezeCanvas'), imgFreezeCtx = imgFreezeCanvas.getContext('2d');
 const histCanvas = $('histCanvas'), histCtx = histCanvas.getContext('2d');
 const frameEl = $('frame'), viewportEl = $('viewport');
 
@@ -1320,8 +1147,8 @@ function toast(msg){
 /* ================= SOURCE MANAGEMENT ================= */
 let webcamStream = null;
 let videoObjectURL = null;
-let gifFrames = [], gifIndex = 0, gifFrameStart = 0, gifLogicalW=0, gifLogicalH=0;
-let hasImage=false, hasGif=false, hasVideo=false, hasWebcam=false;
+let imagePaused = false;
+let hasImage=false, hasVideo=false, hasWebcam=false;
 
 function teardownWebcam(){
   if(webcamStream){
@@ -1375,81 +1202,34 @@ async function populateCameraList(){
 
 function loadImageFile(file){
   teardownAllSources('image');
+  imagePaused = false;
+  const isGif = /image\/gif/i.test(file.type) || /\.gif$/i.test(file.name);
   const url = URL.createObjectURL(file);
   imgEl.onload = ()=>{
     hasImage=true;
-    $('imageStatus').textContent = file.name+' · '+imgEl.naturalWidth+'×'+imgEl.naturalHeight;
+    $('imageStatus').textContent = file.name+' · '+imgEl.naturalWidth+'×'+imgEl.naturalHeight + (isGif? ' · animated GIF' : '');
+    $('imgPlayRow').style.display = isGif ? 'flex' : 'none';
+    setImgPlayLabel();
     URL.revokeObjectURL(url);
   };
   imgEl.src = url;
 }
-
-async function loadGifFile(file){
-  teardownAllSources('gif');
-  hasGif=false;
-  $('gifStatus').textContent = 'decoding…';
-  try{
-    const buf = await file.arrayBuffer();
-    const gif = parseGIF(buf);
-    if(!gif.frames.length) throw new Error('no image frames found in file');
-    gifFrames = gif.frames;
-    gifFrames._lastDrawn = null;
-    gifLogicalW = gif.lsd.width; gifLogicalH = gif.lsd.height;
-    gifCanvas.width = gifLogicalW; gifCanvas.height = gifLogicalH;
-    gifCtx.clearRect(0,0,gifLogicalW,gifLogicalH);
-    gifIndex = 0; gifFrameStart = performance.now(); gifPrevRect = null; gifPrevSnapshot = null; gifHasDrawnAny = false;
-    hasGif = true;
-    $('gifStatus').textContent = file.name+' · '+gifLogicalW+'×'+gifLogicalH+' · '+gifFrames.length+' frames';
-    if(state.sourceMode!=='gif') switchSourceMode('gif');
-  }catch(err){
-    console.error('GIF decode failed:', err);
-    $('gifStatus').textContent = 'error: '+err.message;
-    toast('Could not decode GIF — '+err.message);
-  }
+function setImgPlayLabel(){
+  $('btnImgPlay').textContent = imagePaused ? 'Play' : 'Pause';
 }
-let gifPrevRect = null;
-let gifPrevSnapshot = null; // {imageData,left,top} snapshot taken before drawing a disposal=3 frame
-let gifHasDrawnAny = false;
-function applyGifDisposal(rect){
-  if(!rect) return;
-  if(rect.disposalType===2){
-    gifCtx.clearRect(rect.left, rect.top, rect.width, rect.height);
-  } else if(rect.disposalType===3 && gifPrevSnapshot){
-    try{ gifCtx.putImageData(gifPrevSnapshot.imageData, gifPrevSnapshot.left, gifPrevSnapshot.top); }
-    catch(e){ /* snapshot out of bounds after a resize — ignore, next frame redraws anyway */ }
+function toggleImagePause(){
+  if(!hasImage) return;
+  if(!imagePaused){
+    // freeze on the current live frame: capture it once, then keep showing that
+    // still frame instead of re-sampling the (still internally animating) <img>.
+    const w = imgEl.naturalWidth||1, h = imgEl.naturalHeight||1;
+    imgFreezeCanvas.width = w; imgFreezeCanvas.height = h;
+    try{ imgFreezeCtx.drawImage(imgEl, 0, 0, w, h); }catch(e){}
+    imagePaused = true;
+  } else {
+    imagePaused = false;
   }
-  // disposal 0/1, or 3 with no prior snapshot (e.g. the very first frame): leave in place.
-}
-function advanceGif(now){
-  if(!gifFrames.length) return;
-  let f = gifFrames[gifIndex];
-  if(now - gifFrameStart >= Math.max(20, f.delay||100)){
-    applyGifDisposal(gifPrevRect);
-    gifIndex = (gifIndex+1) % gifFrames.length;
-    gifFrameStart = now;
-    f = gifFrames[gifIndex];
-  }
-  const cur = gifFrames[gifIndex];
-  if(cur && cur !== gifFrames._lastDrawn){
-    // only meaningful if there's a real prior canvas state to snapshot — not on the first frame ever drawn
-    if(cur.disposalType===3 && gifHasDrawnAny){
-      try{
-        gifPrevSnapshot = {
-          imageData: gifCtx.getImageData(cur.dims.left, cur.dims.top, cur.dims.width, cur.dims.height),
-          left: cur.dims.left, top: cur.dims.top
-        };
-      }catch(e){ gifPrevSnapshot = null; }
-    } else {
-      gifPrevSnapshot = null;
-    }
-    patchCanvas.width = cur.dims.width; patchCanvas.height = cur.dims.height;
-    const imgData = new ImageData(new Uint8ClampedArray(cur.patch), cur.dims.width, cur.dims.height);
-    patchCtx.putImageData(imgData,0,0);
-    gifCtx.drawImage(patchCanvas, cur.dims.left, cur.dims.top);
-    gifPrevRect = { left:cur.dims.left, top:cur.dims.top, width:cur.dims.width, height:cur.dims.height, disposalType:cur.disposalType };
-    gifFrames._lastDrawn = cur;
-    gifHasDrawnAny = true;
-  }
+  setImgPlayLabel();
 }
 
 function loadVideoFile(file){
@@ -1479,8 +1259,11 @@ function getActiveDrawable(){
   switch(state.sourceMode){
     case 'webcam': return hasWebcam ? {el:videoEl, w:videoEl.videoWidth, h:videoEl.videoHeight} : null;
     case 'video':  return hasVideo ? {el:videoEl, w:videoEl.videoWidth, h:videoEl.videoHeight} : null;
-    case 'image':  return hasImage ? {el:imgEl, w:imgEl.naturalWidth, h:imgEl.naturalHeight} : null;
-    case 'gif':    return hasGif ? {el:gifCanvas, w:gifLogicalW, h:gifLogicalH} : null;
+    case 'image':
+      if(!hasImage) return null;
+      return imagePaused
+        ? {el:imgFreezeCanvas, w:imgFreezeCanvas.width, h:imgFreezeCanvas.height}
+        : {el:imgEl, w:imgEl.naturalWidth, h:imgEl.naturalHeight};
     default: return null;
   }
 }
@@ -1568,8 +1351,6 @@ let adaptiveTimer = 0;
 function tick(now){
   requestAnimationFrame(tick);
   if(!state.playing) return;
-
-  if(state.sourceMode==='gif') advanceGif(now);
 
   const dt = now-lastTickTime; lastTickTime = now;
   const instFps = 1000/Math.max(dt,1);
@@ -2047,8 +1828,8 @@ function wireDropzone(zoneId, inputId, onFile){
   });
 }
 wireDropzone('dropImage','fileImage', f=>loadImageFile(f));
-wireDropzone('dropGif','fileGif', f=>loadGifFile(f));
 wireDropzone('dropVideo','fileVideo', f=>loadVideoFile(f));
+$('btnImgPlay').addEventListener('click', toggleImagePause);
 $('btnVidPlay').addEventListener('click', ()=>{
   if(videoEl.paused) videoEl.play(); else videoEl.pause();
 });
