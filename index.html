@@ -439,6 +439,7 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
      ============================================================ -->
 <script id="worker-src" type="javascript/worker">
 
+
 "use strict";
 
 const KERNELS_RAW = {
@@ -618,13 +619,14 @@ function ensureScratch(n){
 /* ---------------- single-layer render ---------------- */
 function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
   const { algo, threshold, gain, weight, levels, colorMode, fg, bg, colorA, colorB,
-          palette, invert, serpentine, circuitBend, haltoneShape } = layer;
+          palette, invert, serpentine, circuitBend, haltoneShape, asciiChars } = layer;
   const n = width*height;
   const isDiffusion = !!KERNELS[algo];
   const isOrdered = algo==="bayer2"||algo==="bayer4"||algo==="bayer8";
   const isRandom = algo==="random";
   const isHalftone = algo==="halftone";
   const isSymbols = algo==="symbols";
+  const isAscii = algo==="ascii";
   const isFlat = algo==="threshold";
 
   const bayerN = algo==="bayer2"?2:(algo==="bayer4"?4:8);
@@ -746,6 +748,51 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
     } else {
       const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
       symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, lut[0], lut[1]);
+    }
+  } else if(isAscii){
+    const cell = Math.max(8, Math.round(10*(weight<=0?0.2:weight)));
+    const chars = (asciiChars && asciiChars.length) ? asciiChars : ' .:-=+*#%@';
+    const nLevels = chars.length;
+    if(colorMode==="fullcolor"){
+      for(let cy=0; cy<height; cy+=cell){
+        for(let cx=0; cx<width; cx+=cell){
+          let sum=0, sr=0, sg=0, sb=0, cnt=0;
+          const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+          for(let y=cy;y<yEnd;y++){
+            for(let x=cx;x<xEnd;x++){
+              const i=y*width+x, o=i*4;
+              sum += grayAdj[i];
+              let r=data[o], g=data[o+1], b=data[o+2];
+              if(invert){ r=255-r; g=255-g; b=255-b; }
+              sr += (r-128)*gainF+128+thrShift; sg += (g-128)*gainF+128+thrShift; sb += (b-128)*gainF+128+thrShift;
+              cnt++;
+            }
+          }
+          const avgLum = sum/cnt;
+          let lvl = Math.round((avgLum/255)*(nLevels-1));
+          if(lvl<0) lvl=0; else if(lvl>nLevels-1) lvl=nLevels-1;
+          const stamp = getCharStamp(chars[lvl], cell);
+          const inkR=clamp(sr/cnt,0,255), inkG=clamp(sg/cnt,0,255), inkB=clamp(sb/cnt,0,255);
+          for(let y=cy;y<yEnd;y++){
+            for(let x=cx;x<xEnd;x++){
+              const on = stamp ? stamp[(y-cy)*cell+(x-cx)] : 0;
+              const o=(y*width+x)*4;
+              out[o]=on?inkR:0; out[o+1]=on?inkG:0; out[o+2]=on?inkB:0;
+            }
+          }
+        }
+      }
+    } else if(colorMode==="palette"){
+      const pal = palette;
+      let dark=pal[0], light=pal[0], dl=999, ll=-1;
+      for(const p of pal){
+        const lum=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
+        if(lum<dl){ dl=lum; dark=p; } if(lum>ll){ ll=lum; light=p; }
+      }
+      asciiMonoPass(out, grayAdj, width, height, cell, chars, dark, light);
+    } else {
+      const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
+      asciiMonoPass(out, grayAdj, width, height, cell, chars, lut[0], lut[1]);
     }
   } else if(colorMode==="fullcolor" && isDiffusion){
     const kernel = KERNELS[algo];
@@ -968,6 +1015,58 @@ function symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, c
   }
 }
 
+/* ---------------- ASCII glyph stamps: real font rasterization via OffscreenCanvas ---------------- */
+const HAS_OFFSCREEN_CANVAS = typeof OffscreenCanvas !== "undefined";
+const _charStampCache = new Map(); // key: char+"@"+cellSize -> Uint8Array ink mask (0/1)
+let _glyphCanvas = null, _glyphCtx = null;
+function getCharStamp(ch, cellSize){
+  if(!HAS_OFFSCREEN_CANVAS) return null;
+  const key = ch + "@" + cellSize;
+  let stamp = _charStampCache.get(key);
+  if(stamp) return stamp;
+  if(!_glyphCanvas || _glyphCanvas.width!==cellSize){
+    _glyphCanvas = new OffscreenCanvas(cellSize, cellSize);
+    _glyphCtx = _glyphCanvas.getContext("2d", {willReadFrequently:true});
+  }
+  const ctx = _glyphCtx;
+  ctx.clearRect(0,0,cellSize,cellSize);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0,0,cellSize,cellSize);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold " + Math.round(cellSize*0.92) + "px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(ch, cellSize/2, cellSize/2 + cellSize*0.04);
+  const imgData = ctx.getImageData(0,0,cellSize,cellSize);
+  stamp = new Uint8Array(cellSize*cellSize);
+  const d = imgData.data;
+  for(let i=0;i<cellSize*cellSize;i++) stamp[i] = d[i*4] > 96 ? 1 : 0;
+  _charStampCache.set(key, stamp);
+  return stamp;
+}
+function asciiMonoPass(out, grayAdj, width, height, cell, chars, cLo, cHi){
+  const nLevels = chars.length || 1;
+  for(let cy=0; cy<height; cy+=cell){
+    for(let cx=0; cx<width; cx+=cell){
+      let sum=0, cnt=0;
+      const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+      for(let y=cy;y<yEnd;y++) for(let x=cx;x<xEnd;x++){ sum+=grayAdj[y*width+x]; cnt++; }
+      const avg = sum/cnt;
+      let lvl = Math.round((avg/255)*(nLevels-1));
+      if(lvl<0) lvl=0; else if(lvl>nLevels-1) lvl=nLevels-1;
+      const stamp = getCharStamp(chars[lvl], cell);
+      for(let y=cy;y<yEnd;y++){
+        for(let x=cx;x<xEnd;x++){
+          const on = stamp ? stamp[(y-cy)*cell+(x-cx)] : 0;
+          const col = on? cHi : cLo;
+          const o=(y*width+x)*4;
+          out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+        }
+      }
+    }
+  }
+}
+
 function diffuseChannel(buf, width, height, kernel, step, lm1, weight, serpentine){
   for(let y=0;y<height;y++){
     const flip = serpentine && (y%2!==0);
@@ -1030,6 +1129,7 @@ self.onmessage = function(e){
 };
 
 
+
 </script>
 
 <!-- ============================================================
@@ -1063,12 +1163,17 @@ const ALGO_LABELS = {
   'floyd-steinberg':'Floyd–Steinberg', 'atkinson':'Atkinson', 'burkes':'Burkes', 'sierra3':'Sierra 3-row',
   'sierra2':'Sierra 2-row', 'sierra-lite':'Sierra Lite', 'stucki':'Stucki', 'jjn':'JJN',
   'bayer2':'Bayer 2×2', 'bayer4':'Bayer 4×4', 'bayer8':'Bayer 8×8',
-  'random':'Random', 'halftone':'Halftone', 'symbols':'Symbols', 'threshold':'Threshold'
+  'random':'Random', 'halftone':'Halftone', 'symbols':'Symbols', 'ascii':'ASCII', 'threshold':'Threshold'
 };
 const HALFTONE_SHAPES = [
   ['circle','Circle'], ['square','Square'], ['diamond','Diamond'],
   ['cross','Cross'], ['line-h','Line (horizontal)'], ['line-v','Line (vertical)']
 ];
+const ASCII_RAMPS = {
+  '8':  ' .:+*#%@',
+  '16': ' .:-;=+*xo%#&8@$',
+  '20': ' .:,;-=+<>ivxo*%#&@$'
+};
 const DIFFUSION_ALGOS = { 'floyd-steinberg':1,'atkinson':1,'burkes':1,'sierra3':1,'sierra2':1,'sierra-lite':1,'stucki':1,'jjn':1 };
 const BLEND_MODES = ['normal','multiply','screen','overlay','darken','lighten','difference','exclusion','add'];
 
@@ -1079,6 +1184,7 @@ function makeDefaultLayer(name){
     enabled: true, expanded: true,
     algo: 'floyd-steinberg', threshold: 128, gain: 1.0, weight: 1.0, levels: 2,
     invert: false, serpentine: true, haltoneShape: 'circle',
+    asciiPreset: '16', asciiChars: ASCII_RAMPS['16'],
     colorMode: 'mono',
     monoBg: hexToRgb('#0e120f'), monoFg: hexToRgb('#ede7da'),
     duoA: hexToRgb('#14110d'), duoB: hexToRgb('#5fa889'),
@@ -1095,7 +1201,8 @@ function resolvePalette(L){
 function layerToMessage(L){
   return {
     enabled: L.enabled, algo: L.algo, threshold: L.threshold, gain: L.gain, weight: L.weight, levels: L.levels,
-    invert: L.invert, serpentine: L.serpentine, haltoneShape: L.haltoneShape, colorMode: L.colorMode,
+    invert: L.invert, serpentine: L.serpentine, haltoneShape: L.haltoneShape,
+    asciiChars: L.asciiChars, colorMode: L.colorMode,
     fg: L.monoFg, bg: L.monoBg, colorA: L.duoA, colorB: L.duoB,
     palette: L.colorMode==='palette' ? resolvePalette(L) : null,
     circuitBend: (L.circuitBend/100) + (L.circuitAnimate ? L._animPhase : 0),
@@ -1470,6 +1577,7 @@ function algoOptionsHTML(L){
     ['Ordered', ['bayer2','bayer4','bayer8']],
     ['Stochastic', ['random']],
     ['Screen', ['halftone','symbols']],
+    ['ASCII', ['ascii']],
     ['Flat', ['threshold']]
   ];
   return groups.map(([label,vals])=>
@@ -1594,6 +1702,18 @@ function layerCardHTML(L, i){
         <select data-field="haltoneShape">${HALFTONE_SHAPES.map(([v,label])=>
           `<option value="${v}" ${L.haltoneShape===v?'selected':''}>${label}</option>`).join('')}</select>
       </div>
+      <div class="field" style="display:${L.algo==='ascii'?'block':'none'};">
+        <label style="margin-bottom:7px;">Character ramp</label>
+        <select data-field="asciiPreset">
+          <option value="8" ${L.asciiPreset==='8'?'selected':''}>8 characters</option>
+          <option value="16" ${L.asciiPreset==='16'?'selected':''}>16 characters</option>
+          <option value="20" ${L.asciiPreset==='20'?'selected':''}>20 characters</option>
+          <option value="custom" ${L.asciiPreset==='custom'?'selected':''}>Custom…</option>
+        </select>
+        <input type="text" class="text-input" data-field="asciiChars" value="${L.asciiChars.replace(/"/g,'&quot;')}"
+          spellcheck="false" style="margin-top:7px; font-family:var(--font-m);">
+        <div class="hint">Light → dark, left to right. Cell picks one character per tone step.</div>
+      </div>
       <label class="check" style="display:${showSerp?'flex':'none'}; margin-bottom:10px;">
         <input type="checkbox" data-field="serpentine" ${L.serpentine?'checked':''}><span class="box"></span> Serpentine scan
       </label>
@@ -1604,7 +1724,8 @@ function layerCardHTML(L, i){
         ${knobHTML(L,'weight',0,200,'Weight')}
       </div>
 
-      <div class="field"><label>Levels <span class="val">${L.levels}</span></label>
+      <div class="field" style="display:${(L.algo==='halftone'||L.algo==='ascii')?'none':'block'};">
+        <label>Levels <span class="val">${L.levels}</span></label>
         <input type="range" data-field="levels" min="2" max="8" step="1" value="${L.levels}"></div>
       <label class="check" style="margin-bottom:12px;">
         <input type="checkbox" data-field="invert" ${L.invert?'checked':''}><span class="box"></span> Invert
@@ -1714,6 +1835,7 @@ layersList.addEventListener('input', e=>{
   if(!field || field==='_newSwatch') return;
   if(e.target.tagName==='INPUT' && e.target.type==='text'){
     if(field==='name') L.name = e.target.value;
+    else if(field==='asciiChars'){ L.asciiChars = e.target.value; L.asciiPreset = 'custom'; }
     return; // no re-render — keep typing focus intact
   }
   if(e.target.type==='range'){
@@ -1742,7 +1864,8 @@ layersList.addEventListener('change', e=>{
   if(e.target.type==='checkbox'){ L[field]=e.target.checked; }
   else if(e.target.tagName==='SELECT'){
     L[field]=e.target.value;
-    if(field==='algo' || field==='paletteName') renderLayersUI();
+    if(field==='asciiPreset' && e.target.value!=='custom'){ L.asciiChars = ASCII_RAMPS[e.target.value]; }
+    if(field==='algo' || field==='paletteName' || field==='asciiPreset') renderLayersUI();
   }
 });
 
