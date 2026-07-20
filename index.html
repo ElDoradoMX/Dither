@@ -440,6 +440,7 @@ select:hover, .btn:hover{ border-color:var(--accent-2); }
 <script id="worker-src" type="javascript/worker">
 
 
+
 "use strict";
 
 const KERNELS_RAW = {
@@ -750,14 +751,15 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
       symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, lut[0], lut[1]);
     }
   } else if(isAscii){
-    const cell = Math.max(8, Math.round(10*(weight<=0?0.2:weight)));
+    const cellH = Math.max(10, Math.round(16*(weight<=0?0.2:weight)));
+    const cellW = Math.max(6, Math.round(cellH*0.6));
     const chars = (asciiChars && asciiChars.length) ? asciiChars : ' .:-=+*#%@';
     const nLevels = chars.length;
     if(colorMode==="fullcolor"){
-      for(let cy=0; cy<height; cy+=cell){
-        for(let cx=0; cx<width; cx+=cell){
+      for(let cy=0; cy<height; cy+=cellH){
+        for(let cx=0; cx<width; cx+=cellW){
           let sum=0, sr=0, sg=0, sb=0, cnt=0;
-          const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+          const yEnd=Math.min(cy+cellH,height), xEnd=Math.min(cx+cellW,width);
           for(let y=cy;y<yEnd;y++){
             for(let x=cx;x<xEnd;x++){
               const i=y*width+x, o=i*4;
@@ -769,15 +771,16 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
             }
           }
           const avgLum = sum/cnt;
-          let lvl = Math.round((avgLum/255)*(nLevels-1));
+          let lvl = Math.round((1-avgLum/255)*(nLevels-1));
           if(lvl<0) lvl=0; else if(lvl>nLevels-1) lvl=nLevels-1;
-          const stamp = getCharStamp(chars[lvl], cell);
+          const cw = xEnd-cx, chh = yEnd-cy;
+          const cov = getCharCoverage(chars[lvl], cw, chh);
           const inkR=clamp(sr/cnt,0,255), inkG=clamp(sg/cnt,0,255), inkB=clamp(sb/cnt,0,255);
           for(let y=cy;y<yEnd;y++){
             for(let x=cx;x<xEnd;x++){
-              const on = stamp ? stamp[(y-cy)*cell+(x-cx)] : 0;
+              const t = cov ? cov[(y-cy)*cw+(x-cx)]/255 : 0;
               const o=(y*width+x)*4;
-              out[o]=on?inkR:0; out[o+1]=on?inkG:0; out[o+2]=on?inkB:0;
+              out[o]=inkR*t; out[o+1]=inkG*t; out[o+2]=inkB*t;
             }
           }
         }
@@ -789,10 +792,10 @@ function renderLayer(data, width, height, layer, noiseSeed, S, outBuf){
         const lum=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
         if(lum<dl){ dl=lum; dark=p; } if(lum>ll){ ll=lum; light=p; }
       }
-      asciiMonoPass(out, grayAdj, width, height, cell, chars, dark, light);
+      asciiMonoPass(out, grayAdj, width, height, cellW, cellH, chars, dark, light);
     } else {
       const lut = buildLevelColors(colorMode, 2, bg, fg, colorA, colorB, circuitBend);
-      asciiMonoPass(out, grayAdj, width, height, cell, chars, lut[0], lut[1]);
+      asciiMonoPass(out, grayAdj, width, height, cellW, cellH, chars, lut[0], lut[1]);
     }
   } else if(colorMode==="fullcolor" && isDiffusion){
     const kernel = KERNELS[algo];
@@ -1015,52 +1018,86 @@ function symbolMonoPass(out, grayAdj, width, height, cell, stamps, stampCount, c
   }
 }
 
-/* ---------------- ASCII glyph stamps: real font rasterization via OffscreenCanvas ---------------- */
+/* ---------------- ASCII glyphs: high-res rasterization, downsampled with area averaging ----------------
+   Rendering a character directly at its tiny final cell size and hard-thresholding the result throws
+   away all antialiasing, which is exactly what keeps small text legible — that produced blocky, barely
+   recognizable shapes. Instead: rasterize each character ONCE at a large fixed resolution (crisp source
+   detail), cache that forever, then for a given target cell size, box-filter downsample it into a
+   continuous 0-255 coverage mask (cached per char+size) and alpha-blend with that — real antialiasing,
+   the same way font rendering actually works at small sizes. */
 const HAS_OFFSCREEN_CANVAS = typeof OffscreenCanvas !== "undefined";
-const _charStampCache = new Map(); // key: char+"@"+cellSize -> Uint8Array ink mask (0/1)
+const GLYPH_RES = 64;
+const _rawGlyphCache = new Map();      // char -> Uint8Array(GLYPH_RES*GLYPH_RES) grayscale coverage
+const _coverageCache = new Map();      // char+"@"+w+"x"+h -> Uint8Array(w*h) downsampled coverage
 let _glyphCanvas = null, _glyphCtx = null;
-function getCharStamp(ch, cellSize){
-  if(!HAS_OFFSCREEN_CANVAS) return null;
-  const key = ch + "@" + cellSize;
-  let stamp = _charStampCache.get(key);
-  if(stamp) return stamp;
-  if(!_glyphCanvas || _glyphCanvas.width!==cellSize){
-    _glyphCanvas = new OffscreenCanvas(cellSize, cellSize);
+
+function renderRawGlyph(ch){
+  if(!_glyphCanvas){
+    _glyphCanvas = new OffscreenCanvas(GLYPH_RES, GLYPH_RES);
     _glyphCtx = _glyphCanvas.getContext("2d", {willReadFrequently:true});
   }
   const ctx = _glyphCtx;
-  ctx.clearRect(0,0,cellSize,cellSize);
+  ctx.clearRect(0,0,GLYPH_RES,GLYPH_RES);
   ctx.fillStyle = "#000";
-  ctx.fillRect(0,0,cellSize,cellSize);
+  ctx.fillRect(0,0,GLYPH_RES,GLYPH_RES);
   ctx.fillStyle = "#fff";
-  ctx.font = "bold " + Math.round(cellSize*0.92) + "px monospace";
+  ctx.font = "bold " + Math.round(GLYPH_RES*0.86) + "px monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(ch, cellSize/2, cellSize/2 + cellSize*0.04);
-  const imgData = ctx.getImageData(0,0,cellSize,cellSize);
-  stamp = new Uint8Array(cellSize*cellSize);
+  ctx.fillText(ch, GLYPH_RES/2, GLYPH_RES/2 + GLYPH_RES*0.03);
+  const imgData = ctx.getImageData(0,0,GLYPH_RES,GLYPH_RES);
+  const g = new Uint8Array(GLYPH_RES*GLYPH_RES);
   const d = imgData.data;
-  for(let i=0;i<cellSize*cellSize;i++) stamp[i] = d[i*4] > 96 ? 1 : 0;
-  _charStampCache.set(key, stamp);
-  return stamp;
+  for(let i=0;i<GLYPH_RES*GLYPH_RES;i++) g[i] = d[i*4]; // raw grayscale coverage, no threshold
+  return g;
 }
-function asciiMonoPass(out, grayAdj, width, height, cell, chars, cLo, cHi){
-  const nLevels = chars.length || 1;
-  for(let cy=0; cy<height; cy+=cell){
-    for(let cx=0; cx<width; cx+=cell){
+function getRawGlyph(ch){
+  if(!HAS_OFFSCREEN_CANVAS) return null;
+  let g = _rawGlyphCache.get(ch);
+  if(!g){ g = renderRawGlyph(ch); _rawGlyphCache.set(ch, g); }
+  return g;
+}
+// area-average (box filter) downsample — proper antialiasing, not point-sampling
+function downsampleCoverage(src, srcRes, dstW, dstH){
+  const dst = new Uint8Array(dstW*dstH);
+  for(let dy=0; dy<dstH; dy++){
+    const sy0 = Math.floor(dy*srcRes/dstH), sy1 = Math.max(sy0+1, Math.floor((dy+1)*srcRes/dstH));
+    for(let dx=0; dx<dstW; dx++){
+      const sx0 = Math.floor(dx*srcRes/dstW), sx1 = Math.max(sx0+1, Math.floor((dx+1)*srcRes/dstW));
       let sum=0, cnt=0;
-      const yEnd=Math.min(cy+cell,height), xEnd=Math.min(cx+cell,width);
+      for(let sy=sy0; sy<sy1 && sy<srcRes; sy++){
+        for(let sx=sx0; sx<sx1 && sx<srcRes; sx++){ sum += src[sy*srcRes+sx]; cnt++; }
+      }
+      dst[dy*dstW+dx] = cnt ? Math.round(sum/cnt) : 0;
+    }
+  }
+  return dst;
+}
+function getCharCoverage(ch, cellW, cellH){
+  const raw = getRawGlyph(ch);
+  if(!raw) return null;
+  const key = ch + "@" + cellW + "x" + cellH;
+  let cov = _coverageCache.get(key);
+  if(!cov){ cov = downsampleCoverage(raw, GLYPH_RES, cellW, cellH); _coverageCache.set(key, cov); }
+  return cov;
+}
+function asciiMonoPass(out, grayAdj, width, height, cellW, cellH, chars, cLo, cHi){
+  const nLevels = chars.length || 1;
+  for(let cy=0; cy<height; cy+=cellH){
+    for(let cx=0; cx<width; cx+=cellW){
+      let sum=0, cnt=0;
+      const yEnd=Math.min(cy+cellH,height), xEnd=Math.min(cx+cellW,width);
       for(let y=cy;y<yEnd;y++) for(let x=cx;x<xEnd;x++){ sum+=grayAdj[y*width+x]; cnt++; }
       const avg = sum/cnt;
-      let lvl = Math.round((avg/255)*(nLevels-1));
+      let lvl = Math.round((1-avg/255)*(nLevels-1));
       if(lvl<0) lvl=0; else if(lvl>nLevels-1) lvl=nLevels-1;
-      const stamp = getCharStamp(chars[lvl], cell);
+      const cw = xEnd-cx, chh = yEnd-cy;
+      const cov = getCharCoverage(chars[lvl], cw, chh);
       for(let y=cy;y<yEnd;y++){
         for(let x=cx;x<xEnd;x++){
-          const on = stamp ? stamp[(y-cy)*cell+(x-cx)] : 0;
-          const col = on? cHi : cLo;
+          const t = cov ? cov[(y-cy)*cw+(x-cx)]/255 : 0;
           const o=(y*width+x)*4;
-          out[o]=col[0]; out[o+1]=col[1]; out[o+2]=col[2];
+          out[o]=cLo[0]+(cHi[0]-cLo[0])*t; out[o+1]=cLo[1]+(cHi[1]-cLo[1])*t; out[o+2]=cLo[2]+(cHi[2]-cLo[2])*t;
         }
       }
     }
@@ -1127,6 +1164,7 @@ self.onmessage = function(e){
   const procMs = performance.now()-t0;
   self.postMessage({ type:"result", buffer:out.buffer, width:msg.width, height:msg.height, histogram, procMs, frame:msg.frame }, [out.buffer]);
 };
+
 
 
 
